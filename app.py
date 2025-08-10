@@ -60,31 +60,16 @@ def create_formatted_pdf(text_content: str, topic: str) -> str:
     pdf.set_margins(15, 15, 15)
     pdf.set_auto_page_break(auto=True, margin=20)
 
-    # --- FIX 1: Title now wraps automatically ---
+    # Title wraps automatically
     pdf.set_font("DejaVu", "B", 20)
     pdf.set_text_color(40, 40, 40)
-    pdf.multi_cell(0, 10, f"Cheatsheet: {topic.title()}", 0, 'C') # Use multi_cell for wrapping
+    pdf.multi_cell(0, 10, f"Cheatsheet: {topic.title()}", 0, 'C')
     pdf.ln(2)
     pdf.set_draw_color(200, 200, 200)
     pdf.line(pdf.get_x(), pdf.get_y(), pdf.get_x() + 180, pdf.get_y())
     pdf.ln(10)
 
-    # --- FIX 2: Helper to handle inline markdown like **bold** ---
-    def write_markdown_line(line_text, line_height):
-        # Split the line by bold markers, keeping the captured parts
-        parts = re.split(r'(\*\*.*?\*\*)', line_text)
-        current_x = pdf.get_x()
-        for part in parts:
-            if part.startswith('**') and part.endswith('**'):
-                pdf.set_font("DejaVu", "B", 11)
-                pdf.write(line_height, part.strip('*'))
-            else:
-                pdf.set_font("DejaVu", "", 11)
-                pdf.write(line_height, part)
-        pdf.set_x(current_x) # Reset x position
-        pdf.ln(line_height) # Move to the next line after all parts are written
-
-    # --- Body ---
+    # Body
     line_height = 7
     pdf.set_text_color(50, 50, 50)
     for line in text_content.split('\n'):
@@ -103,7 +88,6 @@ def create_formatted_pdf(text_content: str, topic: str) -> str:
             pdf.multi_cell(0, line_height, f"• {line.replace('- ', '', 1)}")
             pdf.ln(1)
         else:
-            # Use the markdown parser for a general line of text
             pdf.set_font("DejaVu", "", 11)
             pdf.multi_cell(0, line_height, line)
 
@@ -256,6 +240,10 @@ st.markdown(f"""
     }}
     .stButton>button, .stDownloadButton>button {{ border: 1px solid {THEME['border']}; }}
     .note-text {{ color: #787878; font-size: 0.9rem; }}
+    /* Align toggle switch nicely */
+    div[data-testid="stHorizontalBlock"] {{
+        align-items: center;
+    }}
     @media only screen and (max-width: 768px) {{
         .topbar-custom {{ font-size: 1.2rem; padding: 1em; text-align: center; }}
         .msg-user, .msg-bot {{ font-size: 0.95rem; max-width: 95%; }}
@@ -263,18 +251,29 @@ st.markdown(f"""
 </style>
 """, unsafe_allow_html=True)
 
-col1, col2, col3 = st.columns([8, 1, 1])
+# --- NEW: Top Bar Layout with Toggle Switch ---
+col1, col2 = st.columns([8, 1])
 with col1:
     st.markdown("<div class='topbar-custom'>Ophthalmology AI Assistant</div>", unsafe_allow_html=True)
 with col2:
-    if st.button("☀️", key="theme-sun", help="Switch to light mode", use_container_width=True):
-        st.session_state["theme"] = "light"
-        st.rerun()
-with col3:
-    if st.button("🌙", key="theme-moon", help="Switch to dark mode", use_container_width=True):
-        st.session_state["theme"] = "dark"
+    # Determine the current state for the toggle
+    is_dark_on = st.session_state.theme == "dark"
+
+    # Create the toggle switch
+    toggled = st.toggle(
+        "Theme Toggle", # Hidden label
+        value=is_dark_on,
+        key="theme_toggle",
+        help="Switch between light and dark mode", # This is the hint
+        label_visibility="collapsed"
+    )
+
+    # If the toggle's state is different from the session state, update it
+    if toggled != is_dark_on:
+        st.session_state.theme = "dark" if toggled else "light"
         st.rerun()
 
+# --- Chat History, Upload, and other logic remains the same ---
 for entry in st.session_state.chat_history:
     if "user" in entry:
         st.markdown(f"<div class='msg-user'>{entry['user']}</div>", unsafe_allow_html=True)
