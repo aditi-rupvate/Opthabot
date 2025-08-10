@@ -1,11 +1,12 @@
 import os
 import re
 import uuid
-import base64
+import time
 import streamlit as st
 from fpdf import FPDF
 import fitz  # PyMuPDF
 from langchain.agents import AgentExecutor, create_react_agent
+from langchain.chains import RetrievalQA, LLMChain
 from langchain.text_splitter import RecursiveCharacterTextSplitter
 from langchain_community.vectorstores import FAISS
 from langchain_google_genai import ChatGoogleGenerativeAI, GoogleGenerativeAIEmbeddings
@@ -17,7 +18,6 @@ from gtts import gTTS
 from langchain.memory import ConversationBufferMemory
 
 # --- 1. Configuration ---
-os.environ["LANGCHAIN_TRACING_V2"] = "false"
 GOOGLE_API_KEY = st.secrets.get("GOOGLE_API_KEY", "YOUR_DEFAULT_API_KEY_HERE")
 FAISS_INDEX_PATH = "oxford_handbook_kb"
 TEMP_STORAGE_PATH = "temp_user_docs"
@@ -32,30 +32,26 @@ disclaimer_text = "— Note: This output is for academic purposes only and must 
 embeddings = GoogleGenerativeAIEmbeddings(model="models/embedding-001", google_api_key=GOOGLE_API_KEY)
 llm = ChatGoogleGenerativeAI(model="gemini-1.5-flash-latest", temperature=0.3, google_api_key=GOOGLE_API_KEY)
 
-# --- Text-to-Speech Function (with Base64 embedding to prevent file errors) ---
+# --- Text-to-Speech Function (Stable Version) ---
 def text_to_audio_autoplay(text: str, tld: str):
     try:
         tts = gTTS(text=text, lang='en', tld=tld, slow=False)
         audio_filename = os.path.join(CHEATSHEET_PATH, f"response_{uuid.uuid4()}.mp3")
         tts.save(audio_filename)
 
-        with open(audio_filename, "rb") as f:
-            data = f.read()
-            b64 = base64.b64encode(data).decode()
-            md = f"""
-                <audio controls autoplay="true" style="display:none;">
-                <source src="data:audio/mp3;base64,{b64}" type="audio/mp3">
-                </audio>
-                """
-            st.session_state.audio_to_play = md
+        with open(audio_filename, "rb") as audio_file:
+            audio_bytes = audio_file.read()
+            st.audio(audio_bytes, format="audio/mp3", autoplay=True)
+        
+        # Delay to ensure the browser has time to buffer and play the audio
+        time.sleep(2) 
         
         if os.path.exists(audio_filename):
             os.remove(audio_filename)
-            
     except Exception as e:
         st.warning(f"Could not generate audio response: {e}")
 
-# --- PDF Generation Class & Function ---
+# --- PDF Generation Class ---
 class PDF(FPDF):
     def __init__(self, topic, *args, **kwargs):
         super().__init__(*args, **kwargs)
@@ -71,35 +67,53 @@ class PDF(FPDF):
         self.set_text_color(128, 128, 128)
         self.cell(0, 10, f"Page {self.page_no()}/{{nb}}", 0, 0, 'C')
 
+# --- PDF Function ---
 def create_formatted_pdf(text_content: str, topic: str) -> str:
     pdf = PDF(topic)
     try:
         pdf.add_font("DejaVu", "", "DejaVuSans.ttf", uni=True)
         pdf.add_font("DejaVu", "B", "DejaVuSans-Bold.ttf", uni=True)
     except RuntimeError:
-        st.error("Could not find 'DejaVuSans.ttf' or 'DejaVuSans-Bold.ttf'. Please ensure font files are in your project directory.")
+        st.error("Could not find 'DejaVuSans.ttf' or 'DejaVuSans-Bold.ttf'.")
         return ""
     pdf.alias_nb_pages()
     pdf.add_page()
     pdf.set_margins(15, 15, 15)
     pdf.set_auto_page_break(auto=True, margin=20)
-    pdf.set_font("DejaVu", "B", 20); pdf.set_text_color(40, 40, 40)
-    pdf.multi_cell(0, 10, f"Cheatsheet: {topic.title()}", 0, 'C'); pdf.ln(2)
-    pdf.set_draw_color(200, 200, 200); pdf.line(pdf.get_x(), pdf.get_y(), pdf.get_x() + 180, pdf.get_y()); pdf.ln(10)
+    pdf.set_font("DejaVu", "B", 20)
+    pdf.set_text_color(40, 40, 40)
+    pdf.multi_cell(0, 10, f"Cheatsheet: {topic.title()}", 0, 'C')
+    pdf.ln(2)
+    pdf.set_draw_color(200, 200, 200)
+    pdf.line(pdf.get_x(), pdf.get_y(), pdf.get_x() + 180, pdf.get_y())
+    pdf.ln(10)
+    line_height = 7
     pdf.set_text_color(50, 50, 50)
     for line in text_content.split('\n'):
+        line = line.strip()
+        if not line: continue
         if line.startswith('## '):
-            pdf.set_font("DejaVu", "B", 14); pdf.set_text_color(0, 80, 150)
-            pdf.multi_cell(0, 7, line.replace('## ', ''), 0, 'L')
-            pdf.set_text_color(50, 50, 50); pdf.ln(2)
+            pdf.set_font("DejaVu", "B", 14)
+            pdf.set_text_color(0, 80, 150)
+            pdf.multi_cell(0, line_height, line.replace('## ', ''), 0, 'L')
+            pdf.set_text_color(50, 50, 50)
+            pdf.ln(2)
         elif line.startswith('- '):
-            pdf.set_font("DejaVu", "", 11); pdf.set_x(20)
-            pdf.multi_cell(0, 7, f"• {line.replace('- ', '', 1)}"); pdf.ln(1)
+            pdf.set_font("DejaVu", "", 11)
+            pdf.set_x(20)
+            pdf.multi_cell(0, line_height, f"• {line.replace('- ', '', 1)}")
+            pdf.ln(1)
         else:
-            pdf.set_font("DejaVu", "", 11); pdf.multi_cell(0, 7, line.strip())
-    pdf.ln(5); pdf.set_draw_color(200, 200, 200); pdf.line(pdf.get_x(), pdf.get_y(), pdf.get_x() + 180, pdf.get_y()); pdf.ln(4)
-    pdf.set_font("DejaVu", "", 8); pdf.set_text_color(120, 120, 120)
-    pdf.multi_cell(0, 6, disclaimer_text)
+            pdf.set_font("DejaVu", "", 11)
+            pdf.multi_cell(0, line_height, line)
+    pdf.ln(5)
+    pdf.set_draw_color(200, 200, 200)
+    x = pdf.get_x()
+    pdf.line(x, pdf.get_y(), x + 180, pdf.get_y())
+    pdf.ln(4)
+    pdf.set_font("DejaVu", "", 8)
+    pdf.set_text_color(120, 120, 120)
+    pdf.multi_cell(0, 6, "Note: This content is for academic purposes only and must not be used for clinical diagnosis.")
     clean_topic = re.sub(r'[\W_]+', '_', topic).lower()
     filename = f"{clean_topic}_cheatsheet.pdf"
     filepath = os.path.join(CHEATSHEET_PATH, filename)
@@ -107,126 +121,143 @@ def create_formatted_pdf(text_content: str, topic: str) -> str:
     return filename
 
 # --- Main Query Logic ---
-def handle_query_logic(query: str, chat_history: list, session_id: str = None):
+def handle_query_logic(query: str, session_id: str = None):
     if session_id:
-        db_path = os.path.join(TEMP_STORAGE_PATH, session_id)
-        if not os.path.exists(db_path): return "Error: Your document session has expired.", None
+        temp_db_path = os.path.join(TEMP_STORAGE_PATH, session_id)
+        if not os.path.exists(temp_db_path): return "Error: Your document session has expired.", None
+        db = FAISS.load_local(temp_db_path, embeddings, allow_dangerous_deserialization=True)
     else:
-        db_path = FAISS_INDEX_PATH
-        if not os.path.exists(db_path): return "Error: Default knowledge base not available.", None
-    db = FAISS.load_local(db_path, embeddings, allow_dangerous_deserialization=True)
+        if not os.path.exists(FAISS_INDEX_PATH): return "Error: Default knowledge base not available.", None
+        db = FAISS.load_local(FAISS_INDEX_PATH, embeddings, allow_dangerous_deserialization=True)
     
     retriever = db.as_retriever(search_type="similarity", search_kwargs={"k": 5})
 
-    def tool_chain(query: str, template: str):
-        context = "\n\n".join([doc.page_content for doc in retriever.get_relevant_documents(query)])
-        prompt = PromptTemplate.from_template(template)
-        return (prompt | llm | StrOutputParser()).invoke({"context": context, "question": query})
+    def question_answer_func(query: str) -> str:
+        chain = RetrievalQA.from_chain_type(llm=llm, chain_type="stuff", retriever=retriever)
+        return chain.invoke(query)['result']
+
+    def concept_explainer_func(topic: str) -> str:
+        context = "\n\n".join([doc.page_content for doc in retriever.get_relevant_documents(topic)])
+        prompt_template = PromptTemplate.from_template("Provide a comprehensive explanation or summary for {topic}.\n\nContext: {context}\nResponse:")
+        chain = LLMChain(llm=llm, prompt=prompt_template)
+        return chain.run(topic=topic, context=context)
 
     def cheatsheet_generator_func(topic: str) -> str:
-        cheatsheet_text = tool_chain(topic, "Create a detailed cheat sheet for {question} using '##' for headings and '-' for list items.\nContext: {context}\nCheat Sheet:")
+        context = "\n\n".join([doc.page_content for doc in retriever.get_relevant_documents(topic)])
+        prompt_template = PromptTemplate.from_template("Create a detailed cheat sheet for {topic} using '##' for headings and '-' for list items.\nContext: {context}\nCheat Sheet:")
+        chain = LLMChain(llm=llm, prompt=prompt_template)
+        cheatsheet_text = chain.run(topic=topic, context=context)
         pdf_filename = create_formatted_pdf(cheatsheet_text, topic)
         return f"PDF_GENERATED::{pdf_filename}::{cheatsheet_text}"
 
     tools = [
-        StructuredTool.from_function(lambda q: tool_chain(q, "Context: {context}\n\nQuestion: {question}\n\nAnswer:"), name="QuestionAnswerTool", description="Use for direct, specific questions."),
-        StructuredTool.from_function(lambda t: tool_chain(t, "Provide a comprehensive explanation for {question}.\n\nContext: {context}\nResponse:"), name="ConceptExplainerTool", description="Use for summaries or explanations in the chat."),
-        StructuredTool.from_function(cheatsheet_generator_func, name="CheatsheetGeneratorTool", description="Use ONLY when explicitly asked for a downloadable PDF or 'cheat sheet'.")
+        StructuredTool.from_function(func=question_answer_func, name="QuestionAnswerTool", description="Use for direct, specific questions."),
+        StructuredTool.from_function(func=concept_explainer_func, name="ConceptExplainerTool", description="Use for summaries or explanations in the chat."),
+        StructuredTool.from_function(func=cheatsheet_generator_func, name="CheatsheetGeneratorTool", description="Use ONLY when explicitly asked for a downloadable PDF or 'cheat sheet'.")
     ]
     
     base_prompt = hub.pull("hwchase17/react-chat")
     system_instruction = "You are an expert ophthalmology assistant. Your purpose is to answer questions strictly related to ophthalmology or the provided documents. If the user asks a question that is outside of this scope, you must politely decline and state that you can only answer questions about ophthalmology."
     prompt = base_prompt.partial(system_message=system_instruction)
-    agent = create_react_agent(llm, tools, prompt)
-    memory = ConversationBufferMemory(memory_key="chat_history", return_messages=True, output_key='output')
-    for msg in chat_history:
-        if "user" in msg: memory.chat_memory.add_user_message(msg["user"])
-        else: memory.chat_memory.add_ai_message(re.sub(r'<.*?>', '', msg["bot"]))
 
-    agent_executor = AgentExecutor(agent=agent, tools=tools, memory=memory, verbose=False, handle_parsing_errors=True)
+    agent = create_react_agent(llm, tools, prompt)
+    
+    memory = ConversationBufferMemory(memory_key="chat_history", return_messages=True)
+    
+    for msg in st.session_state.chat_history:
+        if "user" in msg:
+            memory.chat_memory.add_user_message(msg["user"])
+        else:
+            clean_bot_message = re.sub(r'<.*?>', '', msg["bot"])
+            memory.chat_memory.add_ai_message(clean_bot_message)
+
+    agent_executor = AgentExecutor(
+        agent=agent, 
+        tools=tools, 
+        memory=memory, 
+        verbose=False, 
+        handle_parsing_errors=True,
+        return_intermediate_steps=True
+    )
+
     response = agent_executor.invoke({"input": query})
+    
     final_answer = response.get('output', "I couldn't find an answer.")
     pdf_filename = None
-    if "PDF_GENERATED::" in final_answer:
-        _, pdf_filename, final_answer = final_answer.split("::", 2)
+
+    if 'intermediate_steps' in response:
+        for _, observation in response['intermediate_steps']:
+            if isinstance(observation, str) and observation.startswith("PDF_GENERATED::"):
+                try: pdf_filename = observation.split("::")[1]
+                except IndexError: pass
     return final_answer, pdf_filename
 
-# --- Streamlit UI Setup ---
-st.set_page_config(layout="centered", page_title="Ophthalmology AI")
-THEME_LIGHT = {"bg": "#f8fafb", "bar": "#fff", "bot": "#e9eef6", "user": "#d1e7dd", "text": "#191b22"}
-THEME_DARK = {"bg": "#18181c", "bar": "#202126", "bot": "#232733", "user": "#22577a", "text": "#f3f5f8"}
-for key, val in [("theme", "dark"), ("chat_history", []), ("session_id", None), 
-                 ("active_doc_name", None), ("voice_enabled", False), 
-                 ("input_accent", 'en-US'), ("output_accent", 'com'), 
-                 ("audio_to_play", None)]:
-    if key not in st.session_state: st.session_state[key] = val
-THEME = THEME_DARK if st.session_state.theme == "dark" else THEME_LIGHT
+# --- Streamlit UI ---
+st.set_page_config(layout="centered")
 
-# --- Sidebar & Styling ---
+LIGHT = {"bg": "#f8fafb", "bar": "#fff", "bot": "#e9eef6", "user": "#d1e7dd", "text": "#191b22", "input": "#e8edf2", "border": "#d4dde7", "expander": "#f4f7fb"}
+DARK = {"bg": "#18181c", "bar": "#202126", "bot": "#232733", "user": "#22577a", "text": "#f3f5f8", "input": "#242730", "border": "#26282f", "expander": "#24272e"}
+
+# Initialize session state variables
+if "theme" not in st.session_state: st.session_state.theme = "dark"
+if "chat_history" not in st.session_state: st.session_state.chat_history = []
+if "session_id" not in st.session_state: st.session_state.session_id = None
+if "active_doc_name" not in st.session_state: st.session_state.active_doc_name = None
+if "voice_enabled" not in st.session_state: st.session_state.voice_enabled = False
+if "input_accent" not in st.session_state: st.session_state.input_accent = 'en-US'
+if "output_accent" not in st.session_state: st.session_state.output_accent = 'com'
+
+THEME = DARK if st.session_state.theme == "dark" else LIGHT
+
+# --- Sidebar for Settings ---
 with st.sidebar:
     st.header("Settings")
-    if st.toggle("Dark Mode", value=st.session_state.theme == "dark"): st.session_state.theme = "dark"
-    else: st.session_state.theme = "light"
-    st.divider(); st.header("Voice Settings")
-    st.session_state.voice_enabled = st.toggle("Enable Voice Chat", value=st.session_state.voice_enabled)
+    is_dark_on = st.session_state.theme == "dark"
+    toggled = st.toggle("Dark Mode", value=is_dark_on, key="theme_toggle", help="Switch themes")
+    if toggled != is_dark_on:
+        st.session_state.theme = "dark" if toggled else "light"
+        st.rerun()
+
+    st.divider()
+    st.header("Voice Settings")
+    st.session_state.voice_enabled = st.toggle("Enable Voice Chat", value=st.session_state.voice_enabled, help="Enable voice input and spoken responses.")
+
     if st.session_state.voice_enabled:
-        accent_map = {'American (US)': 'en-US', 'British (UK)': 'en-GB', 'Indian': 'en-IN'}
-        output_map = {'American (US)': 'com', 'British (UK)': 'co.uk', 'Indian': 'co.in'}
-        selected_input = st.selectbox("Your Accent", list(accent_map.keys()))
-        selected_output = st.selectbox("Assistant's Accent", list(output_map.keys()))
-        st.session_state.input_accent = accent_map[selected_input]
-        st.session_state.output_accent = output_map[selected_output]
-st.markdown(f"""<style>.stApp{{background:{THEME['bg']};color:{THEME['text']}}}.topbar-custom{{background:{THEME['bar']};color:{THEME['text']};border-radius:16px;padding:1.3em 1.2em 1.15em 2.1em;margin-bottom:1.6em;font-size:1.55rem;font-weight:800}}div[data-testid="stChatMessage"]{{background-color:{THEME['bot']};border-radius:16px 16px 20px 4px}}div[data-testid="stChatMessage"][data-testid-role="user"]{{background-color:{THEME['user']};border-radius:16px 16px 4px 20px}}.note-text{{color:#888;font-size:0.9rem}}</style>""", unsafe_allow_html=True)
+        input_accent_options = {'American (US)': 'en-US', 'British (UK)': 'en-GB', 'Indian': 'en-IN'}
+        selected_input_label = st.selectbox("Your Accent (for input)", options=list(input_accent_options.keys()), index=list(input_accent_options.values()).index(st.session_state.input_accent))
+        st.session_state.input_accent = input_accent_options[selected_input_label]
+        
+        output_accent_options = {'American (US)': 'com', 'British (UK)': 'co.uk', 'Indian': 'co.in'}
+        selected_output_label = st.selectbox("Assistant's Accent (for output)", options=list(output_accent_options.keys()), index=list(output_accent_options.values()).index(st.session_state.output_accent))
+        st.session_state.output_accent = output_accent_options[selected_output_label]
+
+# --- UI Styling ---
+st.markdown(f"""
+<style>
+    .stApp {{ background: {THEME['bg']}; color: {THEME['text']}; }}
+    .topbar-custom {{ background: {THEME['bar']}; border-radius: 16px; padding: 1.3em 1.2em 1.15em 2.1em; margin-bottom: 1.6em; box-shadow: 0 2px 12px 0 rgba(44,46,66,0.06); font-size: 1.55rem; font-weight: 800; letter-spacing: .02em; }}
+    .msg-user {{ background: {THEME['user']}; color: {THEME['text']}; border-radius: 16px 16px 4px 20px; margin-bottom: 0.3em; padding: 1em 1.35em; width: fit-content; max-width: 85%; font-size: 1.13rem; border: 1.5px solid {THEME['border']}; margin-left: auto; margin-right: 0; text-align: right; box-shadow: 0 1px 12px 0 rgba(55,96,148,0.05); word-break: break-word; }}
+    .msg-bot {{ background: {THEME['bot']}; color: {THEME['text']}; border-radius: 16px 16px 20px 4px; margin-bottom: 0.7em; padding: 1.08em 1.23em 1em 1.18em; width: fit-content; max-width: 85%; font-size: 1.13rem; border: 1.5px solid {THEME['border']}; margin-right: auto; margin-left: 0; text-align: left; box-shadow: 0 1px 12px 0 rgba(44,46,66,0.05); word-break: break-word; }}
+    [data-testid="stExpander"] {{ border-color: {THEME['border']}; background: {THEME['expander']}; }}
+    .stButton>button, .stDownloadButton>button {{ border: 1px solid {THEME['border']}; }}
+    .note-text {{ color: #787878; font-size: 0.9rem; }}
+    @media only screen and (max-width: 768px) {{ .topbar-custom {{ font-size: 1.2rem; padding: 1em; text-align: center; }} .msg-user, .msg-bot {{ font-size: 0.95rem; max-width: 95%; }} }}
+</style>
+""", unsafe_allow_html=True)
+
 st.markdown("<div class='topbar-custom'>Ophthalmology AI Assistant</div>", unsafe_allow_html=True)
 
-# --- NEW, ARCHITECTURALLY CORRECT CHAT FLOW ---
-# 1. Handle bot response generation if the last message is from the user
-if st.session_state.chat_history and "user" in st.session_state.chat_history[-1]:
-    user_message = st.session_state.chat_history[-1]["user"]
-    history_for_logic = st.session_state.chat_history[:-1]
-    answer, pdf_filename = handle_query_logic(user_message, history_for_logic, st.session_state.get("session_id"))
-    full_answer_html = f"{answer}<br><span class='note-text'>{disclaimer_text}</span>"
-    st.session_state.chat_history.append({"bot": full_answer_html, "pdf_filename": pdf_filename})
-    if st.session_state.voice_enabled:
-        clean_text = re.sub(r'<.*?>', '', answer).replace('`', '').replace('*', '')
-        spoken_text = clean_text + " Is there anything else I can help with?"
-        text_to_audio_autoplay(spoken_text, st.session_state.output_accent)
-
-# 2. Display the entire chat history
-for message in st.session_state.chat_history:
-    role = "user" if "user" in message else "bot"
-    with st.chat_message(role):
-        st.markdown(message[role], unsafe_allow_html=True)
-        if role == 'bot' and message.get('pdf_filename'):
-            pdf_path = os.path.join(CHEATSHEET_PATH, message['pdf_filename'])
+# --- Chat History and Document Handling ---
+for entry in st.session_state.chat_history:
+    if "user" in entry: st.markdown(f"<div class='msg-user'>{entry['user']}</div>", unsafe_allow_html=True)
+    else:
+        st.markdown(f"<div class='msg-bot'>{entry['bot']}</div>", unsafe_allow_html=True)
+        if entry.get("pdf_filename"):
+            pdf_path = os.path.join(CHEATSHEET_PATH, entry["pdf_filename"])
             if os.path.exists(pdf_path):
                 with open(pdf_path, "rb") as pdf_file:
-                    st.download_button("📥 Download Cheatsheet", pdf_file.read(), message['pdf_filename'], "application/pdf", key=f"dl_{message['pdf_filename']}_{uuid.uuid4()}")
+                    st.download_button("📥 Download Cheatsheet", pdf_file.read(), entry["pdf_filename"], "application/pdf", key=f"dl_{entry['pdf_filename']}_{uuid.uuid4()}")
 
-# 3. Play any pending audio
-if st.session_state.audio_to_play:
-    st.markdown(st.session_state.audio_to_play, unsafe_allow_html=True)
-    st.session_state.audio_to_play = None
-
-# 4. Get the next user input
-user_prompt = None
-is_thinking = st.session_state.chat_history and "user" in st.session_state.chat_history[-1]
-if not is_thinking:
-    if st.session_state.voice_enabled:
-        user_prompt = speech_to_text(language=st.session_state.input_accent, use_container_width=True, just_once=True, key=f'STT_{len(st.session_state.chat_history)}')
-    else:
-        user_prompt = st.chat_input("Type your question here...")
-
-    if user_prompt and user_prompt.lower() != "undefined":
-        st.session_state.chat_history.append({"user": user_prompt})
-        st.rerun()
-elif is_thinking:
-    # Display a spinner placeholder while the bot is "thinking"
-    with st.chat_message("bot"):
-        st.spinner("Thinking...")
-
-# 5. Document uploader at the bottom
-st.divider()
 with st.expander("Upload a Custom Document"):
     uploaded_file = st.file_uploader("Upload a PDF", type="pdf")
     if uploaded_file and st.button("Process Document"):
@@ -235,7 +266,7 @@ with st.expander("Upload a Custom Document"):
             temp_dir = os.path.join(TEMP_STORAGE_PATH, session_id)
             os.makedirs(temp_dir, exist_ok=True)
             file_path = os.path.join(temp_dir, uploaded_file.name)
-            with open(file_path, "wb") as f: f.write(uploaded_file.getbuffer())
+            with open(file_path, "wb") as buffer: buffer.write(uploaded_file.getbuffer())
             doc = fitz.open(file_path)
             full_text = "".join(page.get_text() for page in doc)
             doc.close()
@@ -243,7 +274,7 @@ with st.expander("Upload a Custom Document"):
             FAISS.from_texts(texts, embeddings).save_local(temp_dir)
             st.session_state.session_id = session_id
             st.session_state.active_doc_name = uploaded_file.name
-            st.session_state.chat_history = [{"bot": f"Ready for questions about **{uploaded_file.name}**."}]
+            st.session_state.chat_history.append({"bot": f"Ready for questions about **{uploaded_file.name}**.<br><span class='note-text'>{disclaimer_text}</span>"})
             st.rerun()
 
 if st.session_state.active_doc_name:
@@ -251,5 +282,43 @@ if st.session_state.active_doc_name:
     if st.button("Clear Document & Revert to Default"):
         st.session_state.session_id = None
         st.session_state.active_doc_name = None
-        st.session_state.chat_history.append({"bot": "Reverted to default knowledge base."})
+        st.session_state.chat_history.append({"bot": f"Reverted to default knowledge base.<br><span class='note-text'>{disclaimer_text}</span>"})
         st.rerun()
+
+# --- Voice and Text Input ---
+user_prompt = None
+if st.session_state.voice_enabled:
+    user_prompt = speech_to_text(language=st.session_state.input_accent, use_container_width=True, just_once=True, key='STT')
+else:
+    user_prompt = st.chat_input("Type your question here...")
+
+if user_prompt:
+    st.markdown(f"<div class='msg-user'>{user_prompt}</div>", unsafe_allow_html=True)
+    st.session_state.chat_history.append({"user": user_prompt})
+
+    with st.spinner("Thinking..."):
+        answer, pdf_filename = handle_query_logic(user_prompt, st.session_state.get("session_id"))
+        
+        # Clean the text for TTS by removing HTML tags and markdown characters
+        clean_text = re.sub(r'<.*?>', '', answer) 
+        raw_answer_text = clean_text.replace('`', '').replace('*', '')
+
+        full_answer_html = f"{answer}<br><span class='note-text'>{disclaimer_text}</span>"
+        
+        st.markdown(f"<div class='msg-bot'>{full_answer_html}</div>", unsafe_allow_html=True)
+
+        if st.session_state.voice_enabled:
+            # Add the follow-up phrase for a more natural conversation
+            spoken_text = raw_answer_text + " Is there anything else I can help with?"
+            text_to_audio_autoplay(spoken_text, st.session_state.output_accent)
+
+        if pdf_filename:
+            pdf_path = os.path.join(CHEATSHEET_PATH, pdf_filename)
+            if os.path.exists(pdf_path):
+                with open(pdf_path, "rb") as pdf_file:
+                    st.download_button("📥 Download Cheatsheet", pdf_file.read(), pdf_filename, "application/pdf", key=f"dl_{pdf_filename}_{uuid.uuid4()}")
+
+        st.session_state.chat_history.append({"bot": full_answer_html, "pdf_filename": pdf_filename})
+        
+        # We do not rerun here to allow the audio to play fully.
+        # The user can click the microphone again for a new query.
