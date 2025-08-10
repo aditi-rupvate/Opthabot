@@ -1,7 +1,6 @@
 import os
 import re
 import uuid
-import base64
 import streamlit as st
 from fpdf import FPDF
 import fitz  # PyMuPDF
@@ -32,23 +31,19 @@ disclaimer_text = "— Note: This output is for academic purposes only and must 
 embeddings = GoogleGenerativeAIEmbeddings(model="models/embedding-001", google_api_key=GOOGLE_API_KEY)
 llm = ChatGoogleGenerativeAI(model="gemini-1.5-flash-latest", temperature=0.3, google_api_key=GOOGLE_API_KEY)
 
-# --- Text-to-Speech Function ---
+# --- Text-to-Speech Function (Using st.audio for stable playback) ---
 def text_to_audio_autoplay(text: str, tld: str):
     try:
         tts = gTTS(text=text, lang='en', tld=tld, slow=False)
         audio_filename = os.path.join(CHEATSHEET_PATH, f"response_{uuid.uuid4()}.mp3")
         tts.save(audio_filename)
 
-        with open(audio_filename, "rb") as f:
-            data = f.read()
-            b64 = base64.b64encode(data).decode()
-            md = f"""
-                <audio controls autoplay="true" style="display:none;">
-                <source src="data:audio/mp3;base64,{b64}" type="audio/mp3">
-                </audio>
-                """
-            st.markdown(md, unsafe_allow_html=True)
+        # --- FIX: Use st.audio for reliable playback ---
+        with open(audio_filename, "rb") as audio_file:
+            audio_bytes = audio_file.read()
+            st.audio(audio_bytes, format="audio/mp3", autoplay=True)
         
+        # Clean up the audio file after it has been sent to the client
         os.remove(audio_filename)
     except Exception as e:
         st.warning(f"Could not generate audio response: {e}")
@@ -122,7 +117,7 @@ def create_formatted_pdf(text_content: str, topic: str) -> str:
     pdf.output(filepath)
     return filename
 
-# --- Main Query Logic (with Final Corrected Agent) ---
+# --- Main Query Logic (with Corrected Agent and Memory) ---
 def handle_query_logic(query: str, session_id: str = None):
     if session_id:
         temp_db_path = os.path.join(TEMP_STORAGE_PATH, session_id)
@@ -158,11 +153,8 @@ def handle_query_logic(query: str, session_id: str = None):
         StructuredTool.from_function(func=cheatsheet_generator_func, name="CheatsheetGeneratorTool", description="Use ONLY when explicitly asked for a downloadable PDF or 'cheat sheet'.")
     ]
     
-    # --- FIX: Use the standard ReAct prompt from the hub and insert the system message ---
     base_prompt = hub.pull("hwchase17/react-chat")
     system_instruction = "You are an expert ophthalmology assistant. Your purpose is to answer questions strictly related to ophthalmology or the provided documents. If the user asks a question that is outside of this scope, you must politely decline and state that you can only answer questions about ophthalmology."
-    
-    # Replace the placeholder in the base prompt with our custom instruction
     prompt = base_prompt.partial(system_message=system_instruction)
 
     agent = create_react_agent(llm, tools, prompt)
