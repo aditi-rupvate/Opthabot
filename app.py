@@ -45,7 +45,7 @@ class PDF(FPDF):
         self.set_text_color(128, 128, 128)
         self.cell(0, 10, f"Page {self.page_no()}/{{nb}}", 0, 0, 'C')
 
-# --- PDF Function ---
+# --- PDF Function (with title wrapping and markdown parsing) ---
 def create_formatted_pdf(text_content: str, topic: str) -> str:
     pdf = PDF(topic)
     try:
@@ -60,16 +60,31 @@ def create_formatted_pdf(text_content: str, topic: str) -> str:
     pdf.set_margins(15, 15, 15)
     pdf.set_auto_page_break(auto=True, margin=20)
 
-    # Title
+    # --- FIX 1: Title now wraps automatically ---
     pdf.set_font("DejaVu", "B", 20)
     pdf.set_text_color(40, 40, 40)
-    pdf.cell(0, 10, f"Cheatsheet: {topic.title()}", 0, 1, 'C')
+    pdf.multi_cell(0, 10, f"Cheatsheet: {topic.title()}", 0, 'C') # Use multi_cell for wrapping
     pdf.ln(2)
     pdf.set_draw_color(200, 200, 200)
     pdf.line(pdf.get_x(), pdf.get_y(), pdf.get_x() + 180, pdf.get_y())
     pdf.ln(10)
 
-    # Body
+    # --- FIX 2: Helper to handle inline markdown like **bold** ---
+    def write_markdown_line(line_text, line_height):
+        # Split the line by bold markers, keeping the captured parts
+        parts = re.split(r'(\*\*.*?\*\*)', line_text)
+        current_x = pdf.get_x()
+        for part in parts:
+            if part.startswith('**') and part.endswith('**'):
+                pdf.set_font("DejaVu", "B", 11)
+                pdf.write(line_height, part.strip('*'))
+            else:
+                pdf.set_font("DejaVu", "", 11)
+                pdf.write(line_height, part)
+        pdf.set_x(current_x) # Reset x position
+        pdf.ln(line_height) # Move to the next line after all parts are written
+
+    # --- Body ---
     line_height = 7
     pdf.set_text_color(50, 50, 50)
     for line in text_content.split('\n'):
@@ -84,15 +99,15 @@ def create_formatted_pdf(text_content: str, topic: str) -> str:
             pdf.ln(2)
         elif line.startswith('- '):
             pdf.set_font("DejaVu", "", 11)
-            pdf.set_x(20)
-            pdf.multi_cell(0, line_height, f"• {line.replace('- ', '')}")
+            pdf.set_x(20) # Indent
+            pdf.multi_cell(0, line_height, f"• {line.replace('- ', '', 1)}")
             pdf.ln(1)
         else:
+            # Use the markdown parser for a general line of text
             pdf.set_font("DejaVu", "", 11)
             pdf.multi_cell(0, line_height, line)
-            pdf.ln(3)
 
-    # Disclaimer
+    # Disclaimer (small, grey)
     pdf.ln(5)
     pdf.set_draw_color(200, 200, 200)
     x = pdf.get_x()
@@ -109,7 +124,7 @@ def create_formatted_pdf(text_content: str, topic: str) -> str:
     pdf.output(filepath)
     return filename
 
-# --- Main Query Logic (with improved tool descriptions) ---
+# --- Main Query Logic (with smarter tool descriptions) ---
 def handle_query_logic(query: str, session_id: str = None):
     if session_id:
         temp_db_path = os.path.join(TEMP_STORAGE_PATH, session_id)
@@ -123,7 +138,6 @@ def handle_query_logic(query: str, session_id: str = None):
 
     retriever = db.as_retriever(search_type="similarity", search_kwargs={"k": 5})
 
-    # --- Tool descriptions have been updated for better agent decisions ---
     @tool
     def question_answer_tool(query: str) -> str:
         """Use this tool to answer a direct, specific question from the user about the document."""
@@ -199,11 +213,9 @@ if "active_doc_name" not in st.session_state:
 
 THEME = DARK if st.session_state["theme"] == "dark" else LIGHT
 
-# --- Responsive UI Styling ---
 st.markdown(f"""
 <style>
     .stApp {{ background: {THEME['bg']}; color: {THEME['text']}; }}
-
     .topbar-custom {{
         background: {THEME['bar']};
         border-radius: 16px;
@@ -214,70 +226,43 @@ st.markdown(f"""
         font-weight: 800;
         letter-spacing: .02em;
     }}
-
     .msg-user {{
         background: {THEME['user']};
         color: {THEME['text']};
         border-radius: 16px 16px 4px 20px;
         margin-bottom: 0.3em;
         padding: 1em 1.35em;
-        width: fit-content;
-        max-width: 85%;
-        font-size: 1.13rem;
-        border: 1.5px solid {THEME['border']};
-        margin-left: auto;
-        margin-right: 0;
-        text-align: right;
-        box-shadow: 0 1px 12px 0 rgba(55,96,148,0.05);
+        width: fit-content; max-width: 85%;
+        font-size: 1.13rem; border: 1.5px solid {THEME['border']};
+        margin-left: auto; margin-right: 0;
+        text-align: right; box-shadow: 0 1px 12px 0 rgba(55,96,148,0.05);
         word-break: break-word;
     }}
-
     .msg-bot {{
         background: {THEME['bot']};
         color: {THEME['text']};
         border-radius: 16px 16px 20px 4px;
         margin-bottom: 0.7em;
         padding: 1.08em 1.23em 1em 1.18em;
-        width: fit-content;
-        max-width: 85%;
-        font-size: 1.13rem;
-        border: 1.5px solid {THEME['border']};
-        margin-right: auto;
-        margin-left: 0;
-        text-align: left;
-        box-shadow: 0 1px 12px 0 rgba(44,46,66,0.05);
+        width: fit-content; max-width: 85%;
+        font-size: 1.13rem; border: 1.5px solid {THEME['border']};
+        margin-right: auto; margin-left: 0;
+        text-align: left; box-shadow: 0 1px 12px 0 rgba(44,46,66,0.05);
         word-break: break-word;
     }}
-
     [data-testid="stExpander"] {{
         border-color: {THEME['border']};
         background: {THEME['expander']};
     }}
-
-    .stButton>button, .stDownloadButton>button {{
-        border: 1px solid {THEME['border']};
-    }}
-
-    .note-text {{
-        color: #787878;
-        font-size: 0.9rem;
-    }}
-
+    .stButton>button, .stDownloadButton>button {{ border: 1px solid {THEME['border']}; }}
+    .note-text {{ color: #787878; font-size: 0.9rem; }}
     @media only screen and (max-width: 768px) {{
-        .topbar-custom {{
-            font-size: 1.2rem;
-            padding: 1em;
-            text-align: center;
-        }}
-        .msg-user, .msg-bot {{
-            font-size: 0.95rem;
-            max-width: 95%;
-        }}
+        .topbar-custom {{ font-size: 1.2rem; padding: 1em; text-align: center; }}
+        .msg-user, .msg-bot {{ font-size: 0.95rem; max-width: 95%; }}
     }}
 </style>
 """, unsafe_allow_html=True)
 
-# --- Top Bar Layout ---
 col1, col2, col3 = st.columns([8, 1, 1])
 with col1:
     st.markdown("<div class='topbar-custom'>Ophthalmology AI Assistant</div>", unsafe_allow_html=True)
@@ -290,7 +275,6 @@ with col3:
         st.session_state["theme"] = "dark"
         st.rerun()
 
-# --- Chat History Display ---
 for entry in st.session_state.chat_history:
     if "user" in entry:
         st.markdown(f"<div class='msg-user'>{entry['user']}</div>", unsafe_allow_html=True)
@@ -300,15 +284,8 @@ for entry in st.session_state.chat_history:
             pdf_path = os.path.join(CHEATSHEET_PATH, entry["pdf_filename"])
             if os.path.exists(pdf_path):
                 with open(pdf_path, "rb") as pdf_file:
-                    st.download_button(
-                        "📥 Download Cheatsheet",
-                        pdf_file.read(),
-                        entry["pdf_filename"],
-                        "application/pdf",
-                        key=f"dl_{entry['pdf_filename']}_{uuid.uuid4()}"
-                    )
+                    st.download_button("📥 Download Cheatsheet", pdf_file.read(), entry["pdf_filename"], "application/pdf", key=f"dl_{entry['pdf_filename']}_{uuid.uuid4()}")
 
-# --- Upload Expander ---
 with st.expander("Upload a Custom Document"):
     uploaded_file = st.file_uploader("Upload a PDF to ask questions about it", type="pdf")
     if uploaded_file and st.button("Process Document"):
@@ -322,29 +299,21 @@ with st.expander("Upload a Custom Document"):
             doc = fitz.open(file_path)
             full_text = "".join(page.get_text() for page in doc)
             doc.close()
-            text_splitter = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=100)
-            texts = text_splitter.split_text(full_text)
-            temp_db = FAISS.from_texts(texts, embeddings)
-            temp_db.save_local(temp_dir)
+            texts = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=100).split_text(full_text)
+            FAISS.from_texts(texts, embeddings).save_local(temp_dir)
             st.session_state["session_id"] = session_id
             st.session_state["active_doc_name"] = uploaded_file.name
-            st.session_state.chat_history.append({
-                "bot": f"Ready for questions about **{uploaded_file.name}**.<br><span class='note-text'>{disclaimer_text}</span>"
-            })
+            st.session_state.chat_history.append({"bot": f"Ready for questions about **{uploaded_file.name}**.<br><span class='note-text'>{disclaimer_text}</span>"})
             st.rerun()
 
-# --- Active Document Status ---
 if st.session_state["active_doc_name"]:
     st.info(f"Active Document: **{st.session_state['active_doc_name']}**")
     if st.button("Clear Document & Revert to Default"):
         st.session_state["session_id"] = None
         st.session_state["active_doc_name"] = None
-        st.session_state.chat_history.append({
-            "bot": f"Reverted to default knowledge base.<br><span class='note-text'>{disclaimer_text}</span>"
-        })
+        st.session_state.chat_history.append({"bot": f"Reverted to default knowledge base.<br><span class='note-text'>{disclaimer_text}</span>"})
         st.rerun()
 
-# --- User Input & Logic ---
 if user_prompt := st.chat_input("Type your question here..."):
     st.markdown(f"<div class='msg-user'>{user_prompt}</div>", unsafe_allow_html=True)
     st.session_state.chat_history.append({"user": user_prompt})
@@ -352,19 +321,12 @@ if user_prompt := st.chat_input("Type your question here..."):
     with st.spinner("Thinking..."):
         answer, pdf_filename = handle_query_logic(user_prompt, st.session_state.get("session_id"))
         full_answer = f"{answer}<br><span class='note-text'>{disclaimer_text}</span>"
-
         st.markdown(f"<div class='msg-bot'>{full_answer}</div>", unsafe_allow_html=True)
 
         if pdf_filename:
             pdf_path = os.path.join(CHEATSHEET_PATH, pdf_filename)
             if os.path.exists(pdf_path):
                 with open(pdf_path, "rb") as pdf_file:
-                    st.download_button(
-                        "📥 Download Cheatsheet",
-                        pdf_file.read(),
-                        pdf_filename,
-                        "application/pdf",
-                        key=f"dl_{pdf_filename}_{uuid.uuid4()}"
-                    )
+                    st.download_button("📥 Download Cheatsheet", pdf_file.read(), pdf_filename, "application/pdf", key=f"dl_{pdf_filename}_{uuid.uuid4()}")
 
         st.session_state.chat_history.append({"bot": full_answer, "pdf_filename": pdf_filename})
