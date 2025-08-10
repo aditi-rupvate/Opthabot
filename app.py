@@ -4,7 +4,6 @@ import uuid
 import time
 import base64
 import streamlit as st
-from streamlit.components.v1 import html as st_html
 from fpdf import FPDF
 import fitz # PyMuPDF
 from langchain.agents import AgentExecutor, create_react_agent
@@ -27,14 +26,14 @@ CHEATSHEET_PATH = "downloads"
 os.makedirs(TEMP_STORAGE_PATH, exist_ok=True)
 os.makedirs(CHEATSHEET_PATH, exist_ok=True)
 
-# --- DISCLMER ---
-disclmer_text = "— Note: This output is for academic purposes only and must not be used for clinical diagnosis."
+# --- DISCLAIMER ---
+disclaimer_text = "— Note: This output is for academic purposes only and must not be used for clinical diagnosis."
 
 # --- Backend Components ---
 embeddings = GoogleGenerativeAIEmbeddings(model="models/embedding-001", google_api_key=GOOGLE_API_KEY)
-llm = ChatGoogleGenerativeAI(model="gemini-1.5-flash-latest", temperature=0.3, google_api_key=GoogleGenerativeAIEmbeddings)
+llm = ChatGoogleGenerativeAI(model="gemini-1.5-flash-latest", temperature=0.3, google_api_key=GOOGLE_API_KEY)
 
-# --- Text-to-Speech: mobile-safe (returns base64 + renders HTML audio) ---
+# --- Text-to-Speech: returns base64 + we render with WebAudio/HTML ---
 def text_to_audio_b64(text: str, tld: str) -> str | None:
     try:
         tts = gTTS(text=text, lang='en', tld=tld, slow=False)
@@ -52,98 +51,165 @@ def text_to_audio_b64(text: str, tld: str) -> str | None:
         st.warning(f"Could not generate audio response: {e}")
         return None
 
-def render_audio_player_b64(audio_b64: str, consent: bool | None = None):
-    """
-    If consent is False/None -> show visible controls (no autoplay).
-    If consent is True      -> try autoplay; if blocked, show a 'Tap to play' floating button and
-                               also listen for pointer/keyboard to unlock. Uses components.html so JS executes.
-    """
-    if consent is None:
-        consent = bool(st.session_state.get("autoplay_consent", False))
-
-    audio_id = f"audio_{uuid.uuid4().hex}"
-
-    if not consent:
-        # Visible, manual play controls (no JS needed)
-        html = """
-        <audio id="%s" controls playsinline preload="auto" style="width:100%%;height:36px;"
-               src="data:audio/mpeg;base64,%s">
-          <source src="data:audio/mpeg;base64,%s" type="audio/mpeg">
-        </audio>
-        """ % (audio_id, audio_b64, audio_b64)
-        st_html(html, height=50)
-        return
-
-    # Consent given: hidden element + robust unlock script
-    html = """
-    <audio id="%s" autoplay playsinline preload="auto"
-           style="position:absolute;left:-9999px;width:1px;height:1px;opacity:0;pointer-events:none;"
-           src="data:audio/mpeg;base64,%s">
-      <source src="data:audio/mpeg;base64,%s" type="audio/mpeg">
-    </audio>
+# --- GLOBAL: enable autoplay after first user gesture (tap/click/keydown) ---
+def enable_autoplay_globally():
+    st.markdown("""
     <script>
     (function(){
-      var id = "%s";
-      function el(){ return document.getElementById(id); }
+      if (window._ttsUnlockInstalled) return;
+      window._ttsUnlockInstalled = true;
 
-      function tryPlay(a){
-        if(!a) return;
+      const AC = window.AudioContext || window.webkitAudioContext;
+      function unlock(){
         try{
-          var p = a.play();
-          if(p && typeof p.then === "function"){
-            p.then(function(){ /* playing */ })
-             .catch(function(){ createUnlock(a); });
+          if (!AC) return;
+          // create or reuse shared context
+          window._ttsCtx = window._ttsCtx || new AC();
+          if (window._ttsCtx.state !== 'running') {
+            window._ttsCtx.resume();
           }
-        }catch(e){
-          createUnlock(a);
-        }
+          // Prime with tiny silence to keep context "hot" on iOS
+          const ctx = window._ttsCtx;
+          const buf = ctx.createBuffer(1, 22050, 44100);
+          const src = ctx.createBufferSource();
+          src.buffer = buf; src.connect(ctx.destination); src.start(0);
+
+          window._ttsUnlocked = true;
+        }catch(e){}
+        document.removeEventListener('pointerdown', unlock, true);
+        document.removeEventListener('touchstart', unlock, true);
+        document.removeEventListener('click', unlock, true);
+        document.removeEventListener('keydown', unlock, true);
       }
 
-      function createUnlock(a){
-        if(window.__audioUnlockBtn__) return;
-
-        var btn = document.createElement('button');
-        btn.type = 'button';
-        btn.textContent = '🔊 Tap to play';
-        btn.style.cssText = 'position:fixed;bottom:16px;right:16px;padding:10px 14px;'
-          + 'border-radius:12px;border:1px solid #ccc;background:#fff;'
-          + 'box-shadow:0 2px 10px rgba(0,0,0,.12);z-index:2147483647;'
-          + 'font-size:14px;cursor:pointer;';
-        window.__audioUnlockBtn__ = btn;
-
-        function unlock(){
-          try{ a.load(); }catch(_){}
-          a.muted = false; a.volume = 1;
-          a.play().then(remove).catch(function(){ /* keep button shown */ });
-        }
-
-        function remove(){
-          if(btn && btn.parentNode) btn.parentNode.removeChild(btn);
-          window.__audioUnlockBtn__ = null;
-          document.removeEventListener('pointerdown', unlock, true);
-          document.removeEventListener('keydown', onKey, true);
-        }
-
-        function onKey(e){ if(e.key === ' ' || e.key === 'Enter') unlock(); }
-
-        btn.addEventListener('click', unlock, { once:true });
-        document.addEventListener('pointerdown', unlock, true);
-        document.addEventListener('keydown', onKey, true);
-        document.body.appendChild(btn);
-      }
-
-      var attempts = 0, maxAttempts = 40;
-      (function wait(){
-        var a = el();
-        if(a){ tryPlay(a); }
-        else if(attempts++ < maxAttempts){ setTimeout(wait, 100); }
-      })();
+      // Any first gesture unlocks the shared AudioContext for the whole session
+      document.addEventListener('pointerdown', unlock, true);
+      document.addEventListener('touchstart', unlock, true);
+      document.addEventListener('click', unlock, true);
+      document.addEventListener('keydown', unlock, true);
     })();
     </script>
-    """ % (audio_id, audio_b64, audio_b64, audio_id)
+    """, unsafe_allow_html=True)
 
-    # Height 0 so the iframe doesn't take space; JS will add a floating button if needed
-    st_html(html, height=0)
+def render_audio_player_b64(audio_b64: str):
+    """
+    Autoplay strategy:
+      - If a shared AudioContext is unlocked, play immediately via WebAudio (true autoplay).
+      - If not yet unlocked, try HTML muted->unmute autoplay.
+      - If blocked, show a visible <audio> and a big "Tap to play" button (one-time gesture).
+    """
+    wrap_id = f"wrap_{uuid.uuid4().hex}"
+    audio_id = f"audio_{uuid.uuid4().hex}"
+    btn_id = f"btn_{uuid.uuid4().hex}"
+    data_url = f"data:audio/mpeg;base64,{audio_b64}"
+
+    st.markdown(f"""
+    <style>
+      /* Floating UI for audio + fallback button */
+      #{wrap_id} {{
+        position: fixed; left: 12px; right: 12px; bottom: 12px; z-index: 999999;
+      }}
+      #{wrap_id} .bar {{
+        background: rgba(0,0,0,0.06);
+        padding: 6px 8px; border-radius: 10px; backdrop-filter: blur(8px);
+      }}
+      #{audio_id} {{ width: 100%; }}
+      #{btn_id} {{
+        margin-top: 8px; width: 100%; padding: 10px 14px; border-radius: 10px; border: 0;
+        background: #1f6feb; color: #fff; font-weight: 700; box-shadow: 0 2px 10px rgba(0,0,0,.25);
+        font-size: 16px; cursor: pointer; display: none;
+      }}
+      @media (min-width: 700px) {{ #{wrap_id} {{ left: 20px; right: auto; width: 360px; }} }}
+    </style>
+
+    <div id="{wrap_id}">
+      <div class="bar">
+        <audio id="{audio_id}" preload="auto" playsinline controls src="{data_url}">
+          <source src="{data_url}" type="audio/mpeg">
+        </audio>
+        <button id="{btn_id}" aria-label="Tap to play">🔊 Tap to play</button>
+      </div>
+    </div>
+
+    <script>
+    (function(){{
+      const a = document.getElementById("{audio_id}");
+      const btn = document.getElementById("{btn_id}");
+      const base64 = "{audio_b64}";
+
+      // Stop any earlier audios we injected
+      document.querySelectorAll('audio[id^="audio_"]').forEach(el => {{ if (el !== a) try{{el.pause()}}catch(e){{}} }});
+
+      function b64ToBytes(b64){{
+        const bin = atob(b64), len = bin.length, bytes = new Uint8Array(len);
+        for (let i=0;i<len;i++) bytes[i] = bin.charCodeAt(i);
+        return bytes.buffer;
+      }}
+
+      async function playViaWebAudio(){{
+        const AC = window.AudioContext || window.webkitAudioContext;
+        if (!AC) throw new Error("No AudioContext");
+        const ctx = window._ttsCtx || new AC(); window._ttsCtx = ctx;
+        if (ctx.state !== 'running') {{ try{{ await ctx.resume(); }}catch(e){{}} }}
+        const buf = await new Promise((res, rej) => {{
+          try {{ ctx.decodeAudioData(b64ToBytes(base64), res, rej); }} catch(e) {{ rej(e); }}
+        }});
+        const src = ctx.createBufferSource(); src.buffer = buf; src.connect(ctx.destination); src.start(0);
+      }}
+
+      async function tryAutoplay(){{
+        // If unlocked, WebAudio is instant (true autoplay)
+        if (window._ttsUnlocked) {{
+          try {{ await playViaWebAudio(); return true; }} catch(e) {{}}
+        }}
+        // Otherwise, try HTML muted autoplay
+        try {{
+          a.currentTime = 0; a.volume = 1.0; a.muted = true;
+          await a.play();
+          setTimeout(()=>{{ try{{ a.muted = false; }}catch(e){{}} }}, 80);
+          return true;
+        }} catch(e) {{
+          return false;
+        }}
+      }}
+
+      function attachGestureUnlock(){{
+        btn.style.display = "inline-block";
+        const unlock = async () => {{
+          try {{
+            // Resume global context and prefer WebAudio playback
+            const AC = window.AudioContext || window.webkitAudioContext;
+            if (AC) {{
+              const ctx = window._ttsCtx || new AC(); window._ttsCtx = ctx;
+              if (ctx.state !== 'running') {{ try{{ await ctx.resume(); }}catch(e){{}} }}
+              window._ttsUnlocked = (ctx.state === 'running');
+            }}
+            if (window._ttsUnlocked) {{
+              await playViaWebAudio();
+            }} else {{
+              await a.play();
+            }}
+          }} catch(e) {{}}
+          btn.style.display = "none";
+          document.removeEventListener('pointerdown', unlock, true);
+          document.removeEventListener('touchstart', unlock, true);
+          document.removeEventListener('click', unlock, true);
+          document.removeEventListener('keydown', unlock, true);
+        }};
+        document.addEventListener('pointerdown', unlock, true);
+        document.addEventListener('touchstart', unlock, true);
+        document.addEventListener('click', unlock, true);
+        document.addEventListener('keydown', unlock, true);
+        btn.addEventListener('click', (e)=>{{ e.preventDefault(); unlock(); }}, {{ once: true }});
+      }}
+
+      (async function run(){{
+        const ok = await tryAutoplay();
+        if (!ok) attachGestureUnlock();
+      }})();
+    }})();
+    </script>
+    """, unsafe_allow_html=True)
 
 # --- PDF Generation Class ---
 class PDF(FPDF):
@@ -183,8 +249,8 @@ def create_formatted_pdf(text_content: str, topic: str) -> str:
     pdf.ln(10)
     line_height = 7
     pdf.set_text_color(50, 50, 50)
-    for raw in text_content.split('\n'):
-        line = raw.strip()
+    for line in text_content.split('\n'):
+        line = line.strip()
         if not line:
             continue
         if line.startswith('## '):
@@ -300,9 +366,11 @@ def handle_query_logic(query: str, session_id: str = None):
 
 # --- Streamlit UI ---
 st.set_page_config(layout="centered")
+# IMPORTANT: enable autoplay unlock ASAP (first tap will unlock audio globally)
+enable_autoplay_globally()
 
 LIGHT = {"bg": "#f8fafb", "bar": "#fff", "bot": "#e9eef6", "user": "#d1e7dd", "text": "#191b22", "input": "#e8edf2", "border": "#d4dde7", "expander": "#f4f7fb"}
-DARK = {"bg": "#18181c", "bar": "#202126", "bot": "#232733", "user": "#22577a", "text": "#f3f5f8", "input": "#242730", "border": "#26282f", "expander": "#24272e"}
+DARK  = {"bg": "#18181c", "bar": "#202126", "bot": "#232733", "user": "#22577a", "text": "#f3f5f8", "input": "#242730", "border": "#26282f", "expander": "#24272e"}
 
 # Initialize session state variables
 if "theme" not in st.session_state: st.session_state.theme = "dark"
@@ -312,14 +380,12 @@ if "active_doc_name" not in st.session_state: st.session_state.active_doc_name =
 if "voice_enabled" not in st.session_state: st.session_state.voice_enabled = False
 if "input_accent" not in st.session_state: st.session_state.input_accent = 'en-US'
 if "output_accent" not in st.session_state: st.session_state.output_accent = 'com'
-# --- FIX: Added session_started flag ---
+# Added session_started flag
 if "session_started" not in st.session_state: st.session_state.session_started = False
-# --- Consent state ---
-if "autoplay_consent" not in st.session_state: st.session_state.autoplay_consent = False
 
 THEME = DARK if st.session_state.theme == "dark" else LIGHT
 
-# --- FIX: "Initial Interaction" Gate ---
+# --- Initial interaction gate ---
 if not st.session_state.session_started:
     st.markdown("<br><br>", unsafe_allow_html=True)
     st.title("Ophthalmology AI Assistant")
@@ -327,7 +393,7 @@ if not st.session_state.session_started:
     st.markdown("This one-time action enables voice features on mobile devices.")
     if st.button("Start Session", use_container_width=True, type="primary"):
         st.session_state.session_started = True
-        st.rerun()
+        # DO NOT call st.rerun() here; Streamlit will rerun automatically
 else:
     # --- Main Application UI ---
     with st.sidebar:
@@ -358,15 +424,6 @@ else:
             output_accent_options = {'American (US)': 'com', 'British (UK)': 'co.uk', 'Indian': 'co.in'}
             selected_output_label = st.selectbox("Assistant's Accent (for output)", options=list(output_accent_options.keys()), index=list(output_accent_options.values()).index(st.session_state.output_accent))
             st.session_state.output_accent = output_accent_options[selected_output_label]
-
-            # --- Autoplay consent checkbox ---
-            st.session_state.autoplay_consent = st.checkbox(
-                "I consent to auto-play audio replies on this device",
-                value=st.session_state.autoplay_consent,
-                help="On mobile, autoplay may need one tap after consenting to unlock."
-            )
-            if st.session_state.autoplay_consent:
-                st.caption("Autoplay enabled. If nothing plays immediately on mobile, tap once anywhere to unlock audio. Also check the iPhone mute switch.")
 
     st.markdown(f"""
     <style>
@@ -432,14 +489,14 @@ else:
             clean_text = re.sub(r'<.*?>', '', answer)
             raw_answer_text = clean_text.replace('`', '').replace('*', '')
             full_answer_html = f"{answer}<br><span class='note-text'>{disclaimer_text}</span>"
-
+            
             st.markdown(f"<div class='msg-bot'>{full_answer_html}</div>", unsafe_allow_html=True)
 
             if st.session_state.voice_enabled:
                 spoken_text = raw_answer_text + " Is there anything else I can help with?"
                 audio_b64 = text_to_audio_b64(spoken_text, st.session_state.output_accent)
                 if audio_b64:
-                    render_audio_player_b64(audio_b64, st.session_state.autoplay_consent)
+                    render_audio_player_b64(audio_b64)
 
             if pdf_filename:
                 pdf_path = os.path.join(CHEATSHEET_PATH, pdf_filename)
