@@ -1,7 +1,7 @@
 import os
 import re
 import uuid
-import time  # Import the time module for the delay
+import time
 import streamlit as st
 from fpdf import FPDF
 import fitz  # PyMuPDF
@@ -43,11 +43,9 @@ def text_to_audio_autoplay(text: str, tld: str):
             audio_bytes = audio_file.read()
             st.audio(audio_bytes, format="audio/mp3", autoplay=True)
         
-        # --- FIX: Introduce a delay before deleting the file ---
-        # This gives Streamlit and the browser enough time to buffer the audio.
+        # This delay helps ensure the file is available for the browser
         time.sleep(1)
         
-        # Clean up the audio file after the delay
         if os.path.exists(audio_filename):
             os.remove(audio_filename)
     except Exception as e:
@@ -122,7 +120,7 @@ def create_formatted_pdf(text_content: str, topic: str) -> str:
     pdf.output(filepath)
     return filename
 
-# --- Main Query Logic (with Corrected Agent and Memory) ---
+# --- Main Query Logic ---
 def handle_query_logic(query: str, session_id: str = None):
     if session_id:
         temp_db_path = os.path.join(TEMP_STORAGE_PATH, session_id)
@@ -304,18 +302,23 @@ if user_prompt:
         raw_answer_text = re.sub(r'<.*?>', '', answer) 
         full_answer_html = f"{answer}<br><span class='note-text'>{disclaimer_text}</span>"
         
+        # Display the response first
         st.markdown(f"<div class='msg-bot'>{full_answer_html}</div>", unsafe_allow_html=True)
 
+        # Handle audio playback
         if st.session_state.voice_enabled:
             text_to_audio_autoplay(raw_answer_text, st.session_state.output_accent)
 
+        # Handle PDF download button
         if pdf_filename:
             pdf_path = os.path.join(CHEATSHEET_PATH, pdf_filename)
             if os.path.exists(pdf_path):
                 with open(pdf_path, "rb") as pdf_file:
                     st.download_button("📥 Download Cheatsheet", pdf_file.read(), pdf_filename, "application/pdf", key=f"dl_{pdf_filename}_{uuid.uuid4()}")
 
+        # Update chat history
         st.session_state.chat_history.append({"bot": full_answer_html, "pdf_filename": pdf_filename})
         
-        if st.session_state.voice_enabled:
-            st.rerun()
+        # --- FIX: REMOVED the automatic rerun for voice mode ---
+        # The script will now wait here, allowing audio to play fully.
+        # The user can click the microphone button again to initiate a new query.
