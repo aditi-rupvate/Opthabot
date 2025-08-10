@@ -16,6 +16,7 @@ from langchain.tools import StructuredTool
 from streamlit_mic_recorder import speech_to_text
 from gtts import gTTS
 from langchain.memory import ConversationBufferMemory
+from mutagen.mp3 import MP3
 
 # --- 1. Configuration ---
 GOOGLE_API_KEY = st.secrets.get("GOOGLE_API_KEY", "YOUR_DEFAULT_API_KEY_HERE")
@@ -32,23 +33,30 @@ disclaimer_text = "— Note: This output is for academic purposes only and must 
 embeddings = GoogleGenerativeAIEmbeddings(model="models/embedding-001", google_api_key=GOOGLE_API_KEY)
 llm = ChatGoogleGenerativeAI(model="gemini-1.5-flash-latest", temperature=0.3, google_api_key=GOOGLE_API_KEY)
 
-# --- Text-to-Speech Function (Stable Version) ---
-def text_to_audio_autoplay(text: str, tld: str):
+# --- Text-to-Speech Function (Calculates audio duration) ---
+def text_to_audio_autoplay(text: str, tld: str) -> float:
+    audio_duration = 0
     try:
         tts = gTTS(text=text, lang='en', tld=tld, slow=False)
         audio_filename = os.path.join(CHEATSHEET_PATH, f"response_{uuid.uuid4()}.mp3")
         tts.save(audio_filename)
 
+        # Calculate audio duration using mutagen
+        audio = MP3(audio_filename)
+        audio_duration = audio.info.length
+
         with open(audio_filename, "rb") as audio_file:
             audio_bytes = audio_file.read()
             st.audio(audio_bytes, format="audio/mp3", autoplay=True)
         
-        time.sleep(2)
-        
+        # Clean up immediately, as the bytes are sent
         if os.path.exists(audio_filename):
             os.remove(audio_filename)
+            
     except Exception as e:
         st.warning(f"Could not generate audio response: {e}")
+        
+    return audio_duration
 
 # --- PDF Generation Class ---
 class PDF(FPDF):
@@ -246,7 +254,7 @@ st.markdown(f"""
 
 st.markdown("<div class='topbar-custom'>Ophthalmology AI Assistant</div>", unsafe_allow_html=True)
 
-# --- Chat History and Document Handling ---
+# --- Chat History Display ---
 for entry in st.session_state.chat_history:
     if "user" in entry: st.markdown(f"<div class='msg-user'>{entry['user']}</div>", unsafe_allow_html=True)
     else:
@@ -257,33 +265,6 @@ for entry in st.session_state.chat_history:
                 with open(pdf_path, "rb") as pdf_file:
                     st.download_button("📥 Download Cheatsheet", pdf_file.read(), entry["pdf_filename"], "application/pdf", key=f"dl_{entry['pdf_filename']}_{uuid.uuid4()}")
 
-with st.expander("Upload a Custom Document"):
-    uploaded_file = st.file_uploader("Upload a PDF", type="pdf")
-    if uploaded_file and st.button("Process Document"):
-        with st.spinner("Processing document..."):
-            session_id = str(uuid.uuid4())
-            temp_dir = os.path.join(TEMP_STORAGE_PATH, session_id)
-            os.makedirs(temp_dir, exist_ok=True)
-            file_path = os.path.join(temp_dir, uploaded_file.name)
-            with open(file_path, "wb") as buffer: buffer.write(uploaded_file.getbuffer())
-            doc = fitz.open(file_path)
-            full_text = "".join(page.get_text() for page in doc)
-            doc.close()
-            texts = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=100).split_text(full_text)
-            FAISS.from_texts(texts, embeddings).save_local(temp_dir)
-            st.session_state.session_id = session_id
-            st.session_state.active_doc_name = uploaded_file.name
-            st.session_state.chat_history.append({"bot": f"Ready for questions about **{uploaded_file.name}**.<br><span class='note-text'>{disclaimer_text}</span>"})
-            st.rerun()
-
-if st.session_state.active_doc_name:
-    st.info(f"Active Document: **{st.session_state['active_doc_name']}**")
-    if st.button("Clear Document & Revert to Default"):
-        st.session_state.session_id = None
-        st.session_state.active_doc_name = None
-        st.session_state.chat_history.append({"bot": f"Reverted to default knowledge base.<br><span class='note-text'>{disclaimer_text}</span>"})
-        st.rerun()
-
 # --- Voice and Text Input ---
 user_prompt = None
 if st.session_state.voice_enabled:
@@ -291,7 +272,7 @@ if st.session_state.voice_enabled:
 else:
     user_prompt = st.chat_input("Type your question here...")
 
-# --- FIX: Check for and ignore the 'undefined' artifact from the voice component ---
+# --- Main Processing Loop ---
 if user_prompt and user_prompt.lower() != "undefined":
     st.markdown(f"<div class='msg-user'>{user_prompt}</div>", unsafe_allow_html=True)
     st.session_state.chat_history.append({"user": user_prompt})
@@ -306,9 +287,10 @@ if user_prompt and user_prompt.lower() != "undefined":
         
         st.markdown(f"<div class='msg-bot'>{full_answer_html}</div>", unsafe_allow_html=True)
 
+        audio_duration = 0
         if st.session_state.voice_enabled:
             spoken_text = raw_answer_text + " Is there anything else I can help with?"
-            text_to_audio_autoplay(spoken_text, st.session_state.output_accent)
+            audio_duration = text_to_audio_autoplay(spoken_text, st.session_state.output_accent)
 
         if pdf_filename:
             pdf_path = os.path.join(CHEATSHEET_PATH, pdf_filename)
@@ -317,3 +299,37 @@ if user_prompt and user_prompt.lower() != "undefined":
                     st.download_button("📥 Download Cheatsheet", pdf_file.read(), pdf_filename, "application/pdf", key=f"dl_{pdf_filename}_{uuid.uuid4()}")
 
         st.session_state.chat_history.append({"bot": full_answer_html, "pdf_filename": pdf_filename})
+        
+        # --- FIX: Wait for audio to finish, then rerun to reset the mic ---
+        if st.session_state.voice_enabled and audio_duration > 0:
+            time.sleep(audio_duration + 0.5) # Wait for audio to finish playing
+            st.rerun()
+
+# --- NEW: Document Upload Section Moved to the Bottom ---
+st.divider()
+with st.expander("Upload a Custom Document"):
+    uploaded_file = st.file_uploader("Upload a PDF", type="pdf", key="pdf_uploader")
+    if uploaded_file and st.button("Process Document"):
+        with st.spinner("Processing document..."):
+            session_id = str(uuid.uuid4())
+            temp_dir = os.path.join(TEMP_STORAGE_PATH, session_id)
+            os.makedirs(temp_dir, exist_ok=True)
+            file_path = os.path.join(temp_dir, uploaded_file.name)
+            with open(file_path, "wb") as buffer: buffer.write(uploaded_file.getbuffer())
+            doc = fitz.open(file_path)
+            full_text = "".join(page.get_text() for page in doc)
+            doc.close()
+            texts = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=100).split_text(full_text)
+            FAISS.from_texts(texts, embeddings).save_local(temp_dir)
+            st.session_state.session_id = session_id
+            st.session_state.active_doc_name = uploaded_file.name
+            st.session_state.chat_history = [{"bot": f"Ready for questions about **{uploaded_file.name}**.<br><span class='note-text'>{disclaimer_text}</span>"}]
+            st.rerun()
+
+if st.session_state.active_doc_name:
+    st.info(f"Active Document: **{st.session_state['active_doc_name']}**")
+    if st.button("Clear Document & Revert to Default"):
+        st.session_state.session_id = None
+        st.session_state.active_doc_name = None
+        st.session_state.chat_history.append({"bot": f"Reverted to default knowledge base.<br><span class='note-text'>{disclaimer_text}</span>"})
+        st.rerun()
