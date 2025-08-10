@@ -14,15 +14,8 @@ from langchain.prompts import PromptTemplate
 from langchain import hub
 from langchain.tools import StructuredTool
 from streamlit_mic_recorder import speech_to_text
+from gtts import gTTS
 from langchain.memory import ConversationBufferMemory
-
-# Import Google Cloud Text-to-Speech and handle potential errors
-try:
-    from google.cloud import texttospeech
-    from google.api_core import exceptions
-    GCP_TTS_AVAILABLE = True
-except (ImportError, exceptions.DefaultCredentialsError):
-    GCP_TTS_AVAILABLE = False
 
 # --- 1. Configuration ---
 GOOGLE_API_KEY = st.secrets.get("GOOGLE_API_KEY", "YOUR_DEFAULT_API_KEY_HERE")
@@ -39,47 +32,26 @@ disclaimer_text = "— Note: This output is for academic purposes only and must 
 embeddings = GoogleGenerativeAIEmbeddings(model="models/embedding-001", google_api_key=GOOGLE_API_KEY)
 llm = ChatGoogleGenerativeAI(model="gemini-1.5-flash-latest", temperature=0.3, google_api_key=GOOGLE_API_KEY)
 
-# --- NEW: Human-like Text-to-Speech Function ---
-def text_to_audio_autoplay(text: str, voice_name: str, language_code: str):
-    if not GCP_TTS_AVAILABLE:
-        st.error("Google Cloud Text-to-Speech library not found or authentication failed. Please check your setup and requirements.txt file.")
-        return
-
+# --- Text-to-Speech Function (Stable Version) ---
+def text_to_audio_autoplay(text: str, tld: str):
     try:
-        client = texttospeech.TextToSpeechClient()
-        synthesis_input = texttospeech.SynthesisInput(text=text)
-        
-        voice = texttospeech.VoiceSelectionParams(
-            language_code=language_code,
-            name=voice_name
-        )
-        
-        audio_config = texttospeech.AudioConfig(
-            audio_encoding=texttospeech.AudioEncoding.MP3
-        )
-        
-        response = client.synthesize_speech(
-            input=synthesis_input, voice=voice, audio_config=audio_config
-        )
-        
+        tts = gTTS(text=text, lang='en', tld=tld, slow=False)
         audio_filename = os.path.join(CHEATSHEET_PATH, f"response_{uuid.uuid4()}.mp3")
-        with open(audio_filename, "wb") as out:
-            out.write(response.audio_content)
+        tts.save(audio_filename)
 
         with open(audio_filename, "rb") as audio_file:
             audio_bytes = audio_file.read()
             st.audio(audio_bytes, format="audio/mp3", autoplay=True)
         
-        time.sleep(1)
+        # Delay to ensure the browser has time to buffer and play the audio
+        time.sleep(2) 
+        
         if os.path.exists(audio_filename):
             os.remove(audio_filename)
-
-    except exceptions.PermissionDenied:
-        st.error("Authentication failed for Google Cloud Text-to-Speech. Please ensure your `GOOGLE_APPLICATION_CREDENTIALS` are set correctly and the API is enabled.")
     except Exception as e:
-        st.error(f"An error occurred during voice generation: {e}")
+        st.warning(f"Could not generate audio response: {e}")
 
-# --- PDF Generation (Unchanged) ---
+# --- PDF Generation Class ---
 class PDF(FPDF):
     def __init__(self, topic, *args, **kwargs):
         super().__init__(*args, **kwargs)
@@ -95,6 +67,7 @@ class PDF(FPDF):
         self.set_text_color(128, 128, 128)
         self.cell(0, 10, f"Page {self.page_no()}/{{nb}}", 0, 0, 'C')
 
+# --- PDF Function ---
 def create_formatted_pdf(text_content: str, topic: str) -> str:
     pdf = PDF(topic)
     try:
@@ -147,7 +120,7 @@ def create_formatted_pdf(text_content: str, topic: str) -> str:
     pdf.output(filepath)
     return filename
 
-# --- Main Query Logic (Unchanged) ---
+# --- Main Query Logic ---
 def handle_query_logic(query: str, session_id: str = None):
     if session_id:
         temp_db_path = os.path.join(TEMP_STORAGE_PATH, session_id)
@@ -232,7 +205,7 @@ if "session_id" not in st.session_state: st.session_state.session_id = None
 if "active_doc_name" not in st.session_state: st.session_state.active_doc_name = None
 if "voice_enabled" not in st.session_state: st.session_state.voice_enabled = False
 if "input_accent" not in st.session_state: st.session_state.input_accent = 'en-US'
-if "output_voice" not in st.session_state: st.session_state.output_voice = 'en-US-Standard-D'
+if "output_accent" not in st.session_state: st.session_state.output_accent = 'com'
 
 THEME = DARK if st.session_state.theme == "dark" else LIGHT
 
@@ -251,22 +224,14 @@ with st.sidebar:
 
     if st.session_state.voice_enabled:
         input_accent_options = {'American (US)': 'en-US', 'British (UK)': 'en-GB', 'Indian': 'en-IN'}
-        selected_input_label = st.selectbox("Your Speaking Accent", options=list(input_accent_options.keys()))
+        selected_input_label = st.selectbox("Your Accent (for input)", options=list(input_accent_options.keys()), index=list(input_accent_options.values()).index(st.session_state.input_accent))
         st.session_state.input_accent = input_accent_options[selected_input_label]
         
-        # Dropdown for high-quality voices
-        output_voice_options = {
-            'US Male': 'en-US-Standard-D', 
-            'US Female': 'en-US-Standard-C',
-            'UK Male': 'en-GB-Standard-B',
-            'UK Female': 'en-GB-Standard-A',
-            'Australian Male': 'en-AU-Standard-B',
-            'Australian Female': 'en-AU-Standard-A'
-        }
-        selected_output_label = st.selectbox("Assistant's Voice", options=list(output_voice_options.keys()))
-        st.session_state.output_voice = output_voice_options[selected_output_label]
+        output_accent_options = {'American (US)': 'com', 'British (UK)': 'co.uk', 'Indian': 'co.in'}
+        selected_output_label = st.selectbox("Assistant's Accent (for output)", options=list(output_accent_options.keys()), index=list(output_accent_options.values()).index(st.session_state.output_accent))
+        st.session_state.output_accent = output_accent_options[selected_output_label]
 
-# --- UI Styling and Chat History (Unchanged) ---
+# --- UI Styling ---
 st.markdown(f"""
 <style>
     .stApp {{ background: {THEME['bg']}; color: {THEME['text']}; }}
@@ -279,7 +244,10 @@ st.markdown(f"""
     @media only screen and (max-width: 768px) {{ .topbar-custom {{ font-size: 1.2rem; padding: 1em; text-align: center; }} .msg-user, .msg-bot {{ font-size: 0.95rem; max-width: 95%; }} }}
 </style>
 """, unsafe_allow_html=True)
+
 st.markdown("<div class='topbar-custom'>Ophthalmology AI Assistant</div>", unsafe_allow_html=True)
+
+# --- Chat History and Document Handling ---
 for entry in st.session_state.chat_history:
     if "user" in entry: st.markdown(f"<div class='msg-user'>{entry['user']}</div>", unsafe_allow_html=True)
     else:
@@ -289,6 +257,7 @@ for entry in st.session_state.chat_history:
             if os.path.exists(pdf_path):
                 with open(pdf_path, "rb") as pdf_file:
                     st.download_button("📥 Download Cheatsheet", pdf_file.read(), entry["pdf_filename"], "application/pdf", key=f"dl_{entry['pdf_filename']}_{uuid.uuid4()}")
+
 with st.expander("Upload a Custom Document"):
     uploaded_file = st.file_uploader("Upload a PDF", type="pdf")
     if uploaded_file and st.button("Process Document"):
@@ -307,6 +276,7 @@ with st.expander("Upload a Custom Document"):
             st.session_state.active_doc_name = uploaded_file.name
             st.session_state.chat_history.append({"bot": f"Ready for questions about **{uploaded_file.name}**.<br><span class='note-text'>{disclaimer_text}</span>"})
             st.rerun()
+
 if st.session_state.active_doc_name:
     st.info(f"Active Document: **{st.session_state['active_doc_name']}**")
     if st.button("Clear Document & Revert to Default"):
@@ -329,6 +299,7 @@ if user_prompt:
     with st.spinner("Thinking..."):
         answer, pdf_filename = handle_query_logic(user_prompt, st.session_state.get("session_id"))
         
+        # Clean the text for TTS by removing HTML tags and markdown characters
         clean_text = re.sub(r'<.*?>', '', answer) 
         raw_answer_text = clean_text.replace('`', '').replace('*', '')
 
@@ -337,10 +308,9 @@ if user_prompt:
         st.markdown(f"<div class='msg-bot'>{full_answer_html}</div>", unsafe_allow_html=True)
 
         if st.session_state.voice_enabled:
-            # Add the follow-up phrase for voice mode
+            # Add the follow-up phrase for a more natural conversation
             spoken_text = raw_answer_text + " Is there anything else I can help with?"
-            language_code = '-'.join(st.session_state.output_voice.split('-')[:2])
-            text_to_audio_autoplay(spoken_text, st.session_state.output_voice, language_code)
+            text_to_audio_autoplay(spoken_text, st.session_state.output_accent)
 
         if pdf_filename:
             pdf_path = os.path.join(CHEATSHEET_PATH, pdf_filename)
@@ -349,3 +319,6 @@ if user_prompt:
                     st.download_button("📥 Download Cheatsheet", pdf_file.read(), pdf_filename, "application/pdf", key=f"dl_{pdf_filename}_{uuid.uuid4()}")
 
         st.session_state.chat_history.append({"bot": full_answer_html, "pdf_filename": pdf_filename})
+        
+        # We do not rerun here to allow the audio to play fully.
+        # The user can click the microphone again for a new query.
