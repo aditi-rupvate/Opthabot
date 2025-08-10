@@ -1,6 +1,7 @@
 import os
 import re
 import uuid
+import time  # Import the time module for the delay
 import streamlit as st
 from fpdf import FPDF
 import fitz  # PyMuPDF
@@ -31,20 +32,24 @@ disclaimer_text = "— Note: This output is for academic purposes only and must 
 embeddings = GoogleGenerativeAIEmbeddings(model="models/embedding-001", google_api_key=GOOGLE_API_KEY)
 llm = ChatGoogleGenerativeAI(model="gemini-1.5-flash-latest", temperature=0.3, google_api_key=GOOGLE_API_KEY)
 
-# --- Text-to-Speech Function (Using st.audio for stable playback) ---
+# --- Text-to-Speech Function (with delay for stable playback) ---
 def text_to_audio_autoplay(text: str, tld: str):
     try:
         tts = gTTS(text=text, lang='en', tld=tld, slow=False)
         audio_filename = os.path.join(CHEATSHEET_PATH, f"response_{uuid.uuid4()}.mp3")
         tts.save(audio_filename)
 
-        # --- FIX: Use st.audio for reliable playback ---
         with open(audio_filename, "rb") as audio_file:
             audio_bytes = audio_file.read()
             st.audio(audio_bytes, format="audio/mp3", autoplay=True)
         
-        # Clean up the audio file after it has been sent to the client
-        os.remove(audio_filename)
+        # --- FIX: Introduce a delay before deleting the file ---
+        # This gives Streamlit and the browser enough time to buffer the audio.
+        time.sleep(1)
+        
+        # Clean up the audio file after the delay
+        if os.path.exists(audio_filename):
+            os.remove(audio_filename)
     except Exception as e:
         st.warning(f"Could not generate audio response: {e}")
 
