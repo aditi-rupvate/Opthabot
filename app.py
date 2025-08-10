@@ -18,7 +18,7 @@ from streamlit_mic_recorder import speech_to_text
 from gtts import gTTS
 from langchain.memory import ConversationBufferMemory
 
---- Configuration ---
+#--- Configuration ---
 GOOGLE_API_KEY = st.secrets.get("GOOGLE_API_KEY", "YOUR_DEFAULT_API_KEY_HERE")
 FAISS_INDEX_PATH = "oxford_handbook_kb"
 TEMP_STORAGE_PATH = "temp_user_docs"
@@ -26,14 +26,14 @@ CHEATSHEET_PATH = "downloads"
 os.makedirs(TEMP_STORAGE_PATH, exist_ok=True)
 os.makedirs(CHEATSHEET_PATH, exist_ok=True)
 
---- DISCLAIMER ---
+#--- DISCLAIMER ---
 disclaimer_text = "— Note: This output is for academic purposes only and must not be used for clinical diagnosis."
 
---- Backend Components ---
+#--- Backend Components ---
 embeddings = GoogleGenerativeAIEmbeddings(model="models/embedding-001", google_api_key=GOOGLE_API_KEY)
 llm = ChatGoogleGenerativeAI(model="gemini-1.5-flash-latest", temperature=0.3, google_api_key=GOOGLE_API_KEY)
 
---- Text-to-Speech: mobile-safe (returns base64 + renders HTML audio) ---
+#--- Text-to-Speech: mobile-safe (returns base64 + renders HTML audio) ---
 def text_to_audio_b64(text: str, tld: str) -> str | None:
 try:
 tts = gTTS(text=text, lang='en', tld=tld, slow=False)
@@ -60,7 +60,7 @@ Your browser does not support the audio element.
 """
 st.markdown(audio_html, unsafe_allow_html=True)
 
---- PDF Generation Class ---
+#--- PDF Generation Class ---
 class PDF(FPDF):
 def init(self, topic, *args, **kwargs):
 super().init(*args, **kwargs)
@@ -76,7 +76,7 @@ self.set_font("DejaVu", "", 8)
 self.set_text_color(128, 128, 128)
 self.cell(0, 10, f"Page {self.page_no()}/{{nb}}", 0, 0, 'C')
 
---- PDF Function ---
+#--- PDF Function ---
 def create_formatted_pdf(text_content: str, topic: str) -> str:
 pdf = PDF(topic)
 try:
@@ -130,7 +130,7 @@ filepath = os.path.join(CHEATSHEET_PATH, filename)
 pdf.output(filepath)
 return filename
 
---- Main Query Logic ---
+#--- Main Query Logic ---
 def handle_query_logic(query: str, session_id: str = None):
 if session_id:
 temp_db_path = os.path.join(TEMP_STORAGE_PATH, session_id)
