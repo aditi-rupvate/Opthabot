@@ -41,11 +41,11 @@ def text_to_audio_autoplay(text: str, tld: str):
 
         with open(audio_filename, "rb") as audio_file:
             audio_bytes = audio_file.read()
-            # This sends the audio to the browser to be played.
-            # The script does not wait for it to finish.
             st.audio(audio_bytes, format="audio/mp3", autoplay=True)
         
-        # Clean up the file after sending it to the browser
+        # Give a very brief moment for the audio to start before cleanup
+        time.sleep(0.5)
+        
         if os.path.exists(audio_filename):
             os.remove(audio_filename)
             
@@ -122,7 +122,7 @@ def create_formatted_pdf(text_content: str, topic: str) -> str:
     return filename
 
 # --- Main Query Logic ---
-def handle_query_logic(query: str, session_id: str = None):
+def handle_query_logic(query: str, chat_history: list, session_id: str = None):
     if session_id:
         temp_db_path = os.path.join(TEMP_STORAGE_PATH, session_id)
         if not os.path.exists(temp_db_path): return "Error: Your document session has expired.", None
@@ -165,8 +165,7 @@ def handle_query_logic(query: str, session_id: str = None):
     
     memory = ConversationBufferMemory(memory_key="chat_history", return_messages=True)
     
-    # Use all but the last message for history, as the last one is the current query
-    for msg in st.session_state.chat_history[:-1]:
+    for msg in chat_history:
         if "user" in msg:
             memory.chat_memory.add_user_message(msg["user"])
         else:
@@ -208,6 +207,7 @@ if "active_doc_name" not in st.session_state: st.session_state.active_doc_name =
 if "voice_enabled" not in st.session_state: st.session_state.voice_enabled = False
 if "input_accent" not in st.session_state: st.session_state.input_accent = 'en-US'
 if "output_accent" not in st.session_state: st.session_state.output_accent = 'com'
+if "processing" not in st.session_state: st.session_state.processing = False
 
 THEME = DARK if st.session_state.theme == "dark" else LIGHT
 
@@ -249,40 +249,55 @@ st.markdown(f"""
 
 st.markdown("<div class='topbar-custom'>Ophthalmology AI Assistant</div>", unsafe_allow_html=True)
 
-# --- Handle New Prompt ---
-def handle_new_prompt(prompt):
-    st.session_state.chat_history.append({"user": prompt})
-    
-    with st.spinner("Thinking..."):
-        answer, pdf_filename = handle_query_logic(prompt, st.session_state.get("session_id"))
-        
-        # Clean the text for TTS
-        clean_text = re.sub(r'<.*?>', '', answer) 
-        raw_answer_text = clean_text.replace('`', '').replace('*', '')
+# --- NEW, RE-ARCHITECTED APP FLOW ---
 
-        full_answer_html = f"{answer}<br><span class='note-text'>{disclaimer_text}</span>"
-        
-        st.session_state.chat_history.append({"bot": full_answer_html, "pdf_filename": pdf_filename})
-
-        if st.session_state.voice_enabled:
-            spoken_text = raw_answer_text + " Is there anything else I can help you with?"
-            text_to_audio_autoplay(spoken_text, st.session_state.output_accent)
-    
-    st.rerun()
-
-# --- Chat History Display ---
+# 1. Display existing chat history
 for entry in st.session_state.chat_history:
-    if "user" in entry:
-        st.markdown(f"<div class='msg-user'>{entry['user']}</div>", unsafe_allow_html=True)
-    else:
-        st.markdown(f"<div class='msg-bot'>{entry['bot']}</div>", unsafe_allow_html=True)
-        if entry.get("pdf_filename"):
+    role = "user" if "user" in entry else "bot"
+    with st.chat_message(role):
+        st.markdown(entry[role], unsafe_allow_html=True)
+        if role == "bot" and entry.get("pdf_filename"):
             pdf_path = os.path.join(CHEATSHEET_PATH, entry["pdf_filename"])
             if os.path.exists(pdf_path):
                 with open(pdf_path, "rb") as pdf_file:
                     st.download_button("📥 Download Cheatsheet", pdf_file.read(), entry["pdf_filename"], "application/pdf", key=f"dl_{entry['pdf_filename']}_{uuid.uuid4()}")
 
-# --- Input Handling ---
+# 2. Check if we need to generate a bot response
+if st.session_state.chat_history and "user" in st.session_state.chat_history[-1] and not st.session_state.processing:
+    st.session_state.processing = True
+    user_prompt = st.session_state.chat_history[-1]["user"]
+    
+    with st.chat_message("bot"):
+        with st.spinner("Thinking..."):
+            # Pass all history *except* the current user prompt
+            history_for_logic = st.session_state.chat_history[:-1]
+            answer, pdf_filename = handle_query_logic(user_prompt, history_for_logic, st.session_state.get("session_id"))
+
+            # Clean text for TTS
+            clean_text = re.sub(r'<.*?>', '', answer) 
+            raw_answer_text = clean_text.replace('`', '').replace('*', '')
+            full_answer_html = f"{answer}<br><span class='note-text'>{disclaimer_text}</span>"
+            
+            # Display response and download button
+            st.markdown(full_answer_html, unsafe_allow_html=True)
+            if pdf_filename:
+                pdf_path = os.path.join(CHEATSHEET_PATH, pdf_filename)
+                if os.path.exists(pdf_path):
+                    with open(pdf_path, "rb") as pdf_file:
+                        st.download_button("📥 Download Cheatsheet", pdf_file.read(), pdf_filename, "application/pdf", key=f"dl_latest_{pdf_filename}")
+
+            # Store the new bot message
+            st.session_state.chat_history.append({"bot": full_answer_html, "pdf_filename": pdf_filename})
+
+            # Play audio if enabled
+            if st.session_state.voice_enabled:
+                spoken_text = raw_answer_text + " Is there anything else I can help with?"
+                text_to_audio_autoplay(spoken_text, st.session_state.output_accent)
+    
+    st.session_state.processing = False
+    st.rerun()
+
+# 3. Display the input widgets at the bottom
 user_prompt = None
 if st.session_state.voice_enabled:
     user_prompt = speech_to_text(language=st.session_state.input_accent, use_container_width=True, just_once=True, key=f'STT_{len(st.session_state.chat_history)}')
@@ -290,29 +305,30 @@ else:
     user_prompt = st.chat_input("Type your question here...")
 
 if user_prompt and user_prompt.lower() != "undefined":
-    handle_new_prompt(user_prompt)
+    st.session_state.chat_history.append({"user": user_prompt})
+    st.rerun()
 
-# --- Document Upload Section at the Bottom ---
+# 4. Display the document uploader at the very end
 st.divider()
 with st.expander("Upload a Custom Document"):
     uploaded_file = st.file_uploader("Upload a PDF", type="pdf", key="pdf_uploader")
-    if uploaded_file and st.button("Process Document"):
-        with st.spinner("Processing document..."):
-            session_id = str(uuid.uuid4())
-            temp_dir = os.path.join(TEMP_STORAGE_PATH, session_id)
-            os.makedirs(temp_dir, exist_ok=True)
-            file_path = os.path.join(temp_dir, uploaded_file.name)
-            with open(file_path, "wb") as buffer: buffer.write(uploaded_file.getbuffer())
-            doc = fitz.open(file_path)
-            full_text = "".join(page.get_text() for page in doc)
-            doc.close()
-            texts = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=100).split_text(full_text)
-            FAISS.from_texts(texts, embeddings).save_local(temp_dir)
-            st.session_state.session_id = session_id
-            st.session_state.active_doc_name = uploaded_file.name
-            # Clear previous chat history when a new doc is uploaded
-            st.session_state.chat_history = [{"bot": f"Ready for questions about **{uploaded_file.name}**.<br><span class='note-text'>{disclaimer_text}</span>"}]
-            st.rerun()
+    if uploaded_file:
+        if st.button("Process Document"):
+            with st.spinner("Processing document..."):
+                session_id = str(uuid.uuid4())
+                temp_dir = os.path.join(TEMP_STORAGE_PATH, session_id)
+                os.makedirs(temp_dir, exist_ok=True)
+                file_path = os.path.join(temp_dir, uploaded_file.name)
+                with open(file_path, "wb") as buffer: buffer.write(uploaded_file.getbuffer())
+                doc = fitz.open(file_path)
+                full_text = "".join(page.get_text() for page in doc)
+                doc.close()
+                texts = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=100).split_text(full_text)
+                FAISS.from_texts(texts, embeddings).save_local(temp_dir)
+                st.session_state.session_id = session_id
+                st.session_state.active_doc_name = uploaded_file.name
+                st.session_state.chat_history = [{"bot": f"Ready for questions about **{uploaded_file.name}**.<br><span class='note-text'>{disclaimer_text}</span>"}]
+                st.rerun()
 
 if st.session_state.active_doc_name:
     st.info(f"Active Document: **{st.session_state['active_doc_name']}**")
