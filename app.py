@@ -39,10 +39,10 @@ disclaimer_text = "— Note: This output is for academic purposes only and must 
 embeddings = GoogleGenerativeAIEmbeddings(model="models/embedding-001", google_api_key=GOOGLE_API_KEY)
 llm = ChatGoogleGenerativeAI(model="gemini-1.5-flash-latest", temperature=0.3, google_api_key=GOOGLE_API_KEY)
 
-# --- Human-like Text-to-Speech Function (with Robust Error Handling) ---
+# --- NEW: Human-like Text-to-Speech Function ---
 def text_to_audio_autoplay(text: str, voice_name: str, language_code: str):
     if not GCP_TTS_AVAILABLE:
-        st.error("Google Cloud Text-to-Speech library not found or authentication failed. Please check your setup.")
+        st.error("Google Cloud Text-to-Speech library not found or authentication failed. Please check your setup and requirements.txt file.")
         return
 
     try:
@@ -254,11 +254,14 @@ with st.sidebar:
         selected_input_label = st.selectbox("Your Speaking Accent", options=list(input_accent_options.keys()))
         st.session_state.input_accent = input_accent_options[selected_input_label]
         
+        # Dropdown for high-quality voices
         output_voice_options = {
             'US Male': 'en-US-Standard-D', 
-            'UK Female': 'en-GB-Standard-A',
+            'US Female': 'en-US-Standard-C',
             'UK Male': 'en-GB-Standard-B',
-            'Australian Female': 'en-AU-Standard-C'
+            'UK Female': 'en-GB-Standard-A',
+            'Australian Male': 'en-AU-Standard-B',
+            'Australian Female': 'en-AU-Standard-A'
         }
         selected_output_label = st.selectbox("Assistant's Voice", options=list(output_voice_options.keys()))
         st.session_state.output_voice = output_voice_options[selected_output_label]
@@ -334,8 +337,8 @@ if user_prompt:
         st.markdown(f"<div class='msg-bot'>{full_answer_html}</div>", unsafe_allow_html=True)
 
         if st.session_state.voice_enabled:
+            # Add the follow-up phrase for voice mode
             spoken_text = raw_answer_text + " Is there anything else I can help with?"
-            # Extract language code from voice name (e.g., 'en-US-Standard-D' -> 'en-US')
             language_code = '-'.join(st.session_state.output_voice.split('-')[:2])
             text_to_audio_autoplay(spoken_text, st.session_state.output_voice, language_code)
 
