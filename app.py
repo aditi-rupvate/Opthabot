@@ -55,130 +55,130 @@ def text_to_audio_b64(text: str, tld: str) -> str | None:
 def inject_tts_runtime():
     st.markdown("""
     <script>
-    (function(){{
+    (function(){
       // ---------- Device fingerprint ----------
-      if (!window._devProfile){{
+      if (!window._devProfile){
         const ua = navigator.userAgent || navigator.vendor || window.opera || "";
         const isIOS = /iPad|iPhone|iPod/.test(ua) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
         const isAndroid = /Android/.test(ua);
         const isChrome = /Chrome/.test(ua) && !/Edg|OPR|Opera/.test(ua);
         const isSafari = /Safari/.test(ua) && !/Chrome|CriOS|Edg|OPR|Opera/.test(ua);
         const isDesktop = !isIOS && !isAndroid;
-        window._devProfile = {{ isIOS, isAndroid, isChrome, isSafari, isDesktop }};
-      }}
+        window._devProfile = { isIOS, isAndroid, isChrome, isSafari, isDesktop };
+      }
 
       // ---------- One-time unlock on first real gesture ----------
-      if (!window._ttsUnlockInstalled){{
+      if (!window._ttsUnlockInstalled){
         window._ttsUnlockInstalled = true;
         const AC = window.AudioContext || window.webkitAudioContext;
 
-        async function unlock(){{
-          try{{
+        async function unlock(){
+          try{
             if (!AC) return;
             window._ttsCtx = window._ttsCtx || new AC();
-            if (window._ttsCtx.state !== 'running'){{
-              try {{ await window._ttsCtx.resume(); }} catch(e){{}}
-            }}
+            if (window._ttsCtx.state !== 'running'){
+              try { await window._ttsCtx.resume(); } catch(e){}
+            }
             // Prime with a tiny silent buffer so iOS keeps it "hot"
-            try{{
+            try{
               const ctx = window._ttsCtx;
               const buf = ctx.createBuffer(1, 22050, 44100);
               const src = ctx.createBufferSource();
               src.buffer = buf; src.connect(ctx.destination); src.start(0);
-            }}catch(e){{}}
+            }catch(e){}
             window._ttsUnlocked = true;
-          }}catch(e){{}}
+          }catch(e){}
           document.removeEventListener('pointerdown', unlock, true);
           document.removeEventListener('touchstart', unlock, true);
           document.removeEventListener('click', unlock, true);
           document.removeEventListener('keydown', unlock, true);
-        }}
+        }
 
         document.addEventListener('pointerdown', unlock, true);
         document.addEventListener('touchstart', unlock, true);
         document.addEventListener('click', unlock, true);
         document.addEventListener('keydown', unlock, true);
-      }}
+      }
 
       // ---------- TTS Controller (WebAudio first) ----------
-      if (!window.TTS){{
+      if (!window.TTS){
         const AC = window.AudioContext || window.webkitAudioContext;
 
-        async function ensureCtx(){{
+        async function ensureCtx(){
           if (!AC) throw new Error("No WebAudio support");
           const ctx = window._ttsCtx || new AC();
           window._ttsCtx = ctx;
-          if (ctx.state !== 'running'){{
-            try {{ await ctx.resume(); }} catch(e){{}}
-          }}
+          if (ctx.state !== 'running'){
+            try { await ctx.resume(); } catch(e){}
+          }
           return ctx;
-        }}
+        }
 
-        async function playMp3Base64(b64){{
+        async function playMp3Base64(b64){
           const ctx = await ensureCtx();
           // Robust: fetch data URL, decode as ArrayBuffer
           const url = "data:audio/mpeg;base64," + b64;
           const res = await fetch(url);
           const arrBuf = await res.arrayBuffer();
-          const audioBuf = await new Promise((resv, rej)=>{{
-            try {{ ctx.decodeAudioData(arrBuf, resv, rej); }} catch(e) {{ rej(e); }}
-          }});
+          const audioBuf = await new Promise((resv, rej)=>{
+            try { ctx.decodeAudioData(arrBuf, resv, rej); } catch(e) { rej(e); }
+          });
           const src = ctx.createBufferSource();
           src.buffer = audioBuf; src.connect(ctx.destination); src.start(0);
-        }}
+        }
 
-        function chooseVoice(voices){{
+        function chooseVoice(voices){
           if (!voices || !voices.length) return null;
           return voices.find(v => /en-GB|en-US|en-/.test(v.lang)) || voices[0];
-        }}
+        }
 
-        async function speakText(text){{
+        async function speakText(text){
           const ss = window.speechSynthesis;
           if (!ss) throw new Error("no speechSynthesis");
           ss.cancel();
           const u = new SpeechSynthesisUtterance(text);
-          const assignAndSpeak = ()=>{{
+          const assignAndSpeak = ()=>{
             const v = chooseVoice(ss.getVoices());
             if (v) u.voice = v;
             u.rate = 1.0; u.pitch = 1.0; u.volume = 1.0;
             ss.speak(u);
-          }};
-          if (!ss.getVoices().length){{
-            return new Promise(resolve=>{{
-              const once = ()=>{{ try{{assignAndSpeak();}}catch(e){{}}; ss.removeEventListener('voiceschanged', once); resolve(true); }};
+          };
+          if (!ss.getVoices().length){
+            return new Promise(resolve=>{
+              const once = ()=>{ try{assignAndSpeak();}catch(e){}; ss.removeEventListener('voiceschanged', once); resolve(true); };
               ss.addEventListener('voiceschanged', once);
-              setTimeout(()=>{{ try{{assignAndSpeak();}}catch(e){{}}; resolve(true); }}, 400);
-            }});
-          }} else {{
+              setTimeout(()=>{ try{assignAndSpeak();}catch(e){}; resolve(true); }, 400);
+            });
+          } else {
             assignAndSpeak();
             return true;
-          }}
-        }}
+          }
+        }
 
-        window.TTS = {{
+        window.TTS = {
           isUnlocked: ()=> !!window._ttsUnlocked,
-          play: async (b64, text)=>{{
+          play: async (b64, text)=>{
             // Try WebAudio if unlocked
-            if (window._ttsUnlocked){{
-              try {{ await playMp3Base64(b64); return 'webaudio'; }} catch(e){{}}
-            }}
+            if (window._ttsUnlocked){
+              try { await playMp3Base64(b64); return 'webaudio'; } catch(e){}
+            }
             // Try HTMLAudio muted->unmute
-            try {{
+            try {
               const a = new Audio("data:audio/mpeg;base64,"+b64);
               a.muted = true;
               await a.play();
-              setTimeout(()=>{{ try{{ a.muted = false; }}catch(e){{}} }}, 80);
+              setTimeout(()=>{ try{ a.muted = false; }catch(e){} }, 80);
               return 'html';
-            }} catch(e){{}}
+            } catch(e){}
             // Last ditch: speech synthesis (text)
-            try {{ await speakText(text); return 'speech'; }} catch(e){{}}
+            try { await speakText(text); return 'speech'; } catch(e){}
             return 'blocked';
-          }},
+          },
           playWebAudio: playMp3Base64,
           speakText
-        }};
-      }}
-    }})();
+        };
+      }
+    })();
     </script>
     """, unsafe_allow_html=True)
 
@@ -212,11 +212,6 @@ def render_speech(spoken_text: str, audio_b64: str):
       const text = {js_text};
       const b64 = "{audio_b64}";
       const btn = document.getElementById("{btn_id}");
-
-      // stop any prior HTMLAudio we spawned
-      try {{
-        document.querySelectorAll('audio[data-tts="1"]').forEach(a=>{{ try{{a.pause()}}catch(e){{}} }});
-      }} catch(e){{}}
 
       async function tryNow(){{
         if (!window.TTS) return 'blocked';
@@ -305,7 +300,7 @@ def create_formatted_pdf(text_content: str, topic: str) -> str:
     pdf.ln(10)
     line_height = 7
     pdf.set_text_color(50, 50, 50)
-    for line in text_content.split('\\n'):
+    for line in text_content.split('\n'):
         line = line.strip()
         if not line:
             continue
@@ -331,7 +326,7 @@ def create_formatted_pdf(text_content: str, topic: str) -> str:
     pdf.set_font("DejaVu", "", 8)
     pdf.set_text_color(120, 120, 120)
     pdf.multi_cell(0, 6, "Note: This content is for academic purposes only and must not be used for clinical diagnosis.")
-    clean_topic = re.sub(r'[\\W_]+', '_', topic).lower()
+    clean_topic = re.sub(r'[\W_]+', '_', topic).lower()
     filename = f"{clean_topic}_cheatsheet.pdf"
     filepath = os.path.join(CHEATSHEET_PATH, filename)
     pdf.output(filepath)
@@ -349,29 +344,29 @@ def handle_query_logic(query: str, session_id: str = None):
             return "Error: Default knowledge base not available.", None
         db = FAISS.load_local(FAISS_INDEX_PATH, embeddings, allow_dangerous_deserialization=True)
     
-    retriever = db.as_retriever(search_type="similarity", search_kwargs={{"k": 5}})
+    retriever = db.as_retriever(search_type="similarity", search_kwargs={"k": 5})
 
     def question_answer_func(query: str) -> str:
         chain = RetrievalQA.from_chain_type(llm=llm, chain_type="stuff", retriever=retriever)
         return chain.invoke(query)['result']
 
     def concept_explainer_func(topic: str) -> str:
-        context = "\\n\\n".join([doc.page_content for doc in retriever.get_relevant_documents(topic)])
+        context = "\n\n".join([doc.page_content for doc in retriever.get_relevant_documents(topic)])
         prompt_template = PromptTemplate.from_template(
-            "Provide a comprehensive explanation or summary for {{topic}}.\\n\\nContext: {{context}}\\nResponse:"
+            "Provide a comprehensive explanation or summary for {topic}.\n\nContext: {context}\nResponse:"
         )
         chain = LLMChain(llm=llm, prompt=prompt_template)
         return chain.run(topic=topic, context=context)
 
     def cheatsheet_generator_func(topic: str) -> str:
-        context = "\\n\\n".join([doc.page_content for doc in retriever.get_relevant_documents(topic)])
+        context = "\n\n".join([doc.page_content for doc in retriever.get_relevant_documents(topic)])
         prompt_template = PromptTemplate.from_template(
-            "Create a detailed cheat sheet for {{topic}} using '##' for headings and '-' for list items.\\nContext: {{context}}\\nCheat Sheet:"
+            "Create a detailed cheat sheet for {topic} using '##' for headings and '-' for list items.\nContext: {context}\nCheat Sheet:"
         )
         chain = LLMChain(llm=llm, prompt=prompt_template)
         cheatsheet_text = chain.run(topic=topic, context=context)
         pdf_filename = create_formatted_pdf(cheatsheet_text, topic)
-        return f"PDF_GENERATED::{{pdf_filename}}::{{cheatsheet_text}}"
+        return f"PDF_GENERATED::{pdf_filename}::{cheatsheet_text}"
 
     tools = [
         StructuredTool.from_function(func=question_answer_func, name="QuestionAnswerTool", description="Use for direct, specific questions."),
@@ -406,7 +401,7 @@ def handle_query_logic(query: str, session_id: str = None):
         return_intermediate_steps=True
     )
 
-    response = agent_executor.invoke({{"input": query}})
+    response = agent_executor.invoke({"input": query})
     
     final_answer = response.get('output', "I couldn't find an answer.")
     pdf_filename = None
@@ -426,8 +421,8 @@ st.set_page_config(layout="centered")
 # Inject TTS runtime ASAP (before any UI interaction)
 inject_tts_runtime()
 
-LIGHT = {{"bg": "#f8fafb", "bar": "#fff", "bot": "#e9eef6", "user": "#d1e7dd", "text": "#191b22", "input": "#e8edf2", "border": "#d4dde7", "expander": "#f4f7fb"}}
-DARK  = {{"bg": "#18181c", "bar": "#202126", "bot": "#232733", "user": "#22577a", "text": "#f3f5f8", "input": "#242730", "border": "#26282f", "expander": "#24272e"}}
+LIGHT = {"bg": "#f8fafb", "bar": "#fff", "bot": "#e9eef6", "user": "#d1e7dd", "text": "#191b22", "input": "#e8edf2", "border": "#d4dde7", "expander": "#f4f7fb"}
+DARK  = {"bg": "#18181c", "bar": "#202126", "bot": "#232733", "user": "#22577a", "text": "#f3f5f8", "input": "#242730", "border": "#26282f", "expander": "#24272e"}
 
 # State
 if "theme" not in st.session_state: st.session_state.theme = "dark"
@@ -464,10 +459,10 @@ else:
         st.session_state.voice_enabled = st.toggle("Enable Voice Chat", value=st.session_state.voice_enabled, help="Enable voice input and spoken responses.")
 
         if st.session_state.voice_enabled:
-            input_accent_options = {{
+            input_accent_options = {
                 'American (US)': 'en-US', 'British (UK)': 'en-GB', 'Indian': 'en-IN',
                 'Australian': 'en-AU', 'Canadian': 'en-CA', 'South African': 'en-ZA'
-            }}
+            }
             current_accent_index = 0
             try:
                 current_accent_index = list(input_accent_options.values()).index(st.session_state.input_accent)
@@ -476,7 +471,7 @@ else:
             selected_input_label = st.selectbox("Your Accent (for input)", options=list(input_accent_options.keys()), index=current_accent_index)
             st.session_state.input_accent = input_accent_options[selected_input_label]
             
-            output_accent_options = {{'American (US)': 'com', 'British (UK)': 'co.uk', 'Indian': 'co.in'}}
+            output_accent_options = {'American (US)': 'com', 'British (UK)': 'co.uk', 'Indian': 'co.in'}
             selected_output_label = st.selectbox("Assistant's Accent (for output)", options=list(output_accent_options.keys()), index=list(output_accent_options.values()).index(st.session_state.output_accent))
             st.session_state.output_accent = output_accent_options[selected_output_label]
 
