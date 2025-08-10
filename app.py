@@ -51,43 +51,69 @@ def text_to_audio_b64(text: str, tld: str) -> str | None:
         st.warning(f"Could not generate audio response: {e}")
         return None
 
-def render_audio_player_b64(audio_b64: str):
-    # Mobile-safe autoplay with fallback on first user gesture (iOS/Android)
+def render_audio_player_b64(audio_b64: str, consent: bool | None = None):
+    """
+    Renders an audio element. If consent is not given, shows controls without autoplay.
+    If consent is given, attempts autoplay and falls back to first user gesture (mobile-safe).
+    """
+    if consent is None:
+        consent = bool(st.session_state.get("autoplay_consent", False))
+
     audio_id = f"audio_{uuid.uuid4().hex}"
+
+    if consent:
+        # Hidden, autoplaying player
+        controls_attr = ""  # no visible controls
+        style = "width:0;height:0;visibility:hidden;"
+        autoplay_attr = "autoplay"
+    else:
+        # Visible player with controls; no autoplay
+        controls_attr = "controls"
+        style = "width:100%;height:32px;visibility:visible;"
+        autoplay_attr = ""
+
     audio_html = f"""
-    <audio id="{audio_id}" autoplay playsinline preload="auto"
-           style="width:0;height:0;visibility:hidden;" controlslist="nodownload noplaybackrate"
+    <audio id="{audio_id}" {autoplay_attr} playsinline preload="auto" {controls_attr}
+           style="{style}" controlslist="nodownload noplaybackrate"
            src="data:audio/mpeg;base64,{audio_b64}">
       <source src="data:audio/mpeg;base64,{audio_b64}" type="audio/mpeg">
     </audio>
-    <script>
-      (function() {{
-        const a = document.getElementById("{audio_id}");
-        if (!a) return;
-        function tryPlay() {{
-          const p = a.play();
-          if (p && typeof p.then === "function") {{
-            p.catch(() => {{
-              // If autoplay is blocked, unlock on the next user gesture
-              const unlock = () => {{
-                a.play().catch(() => {{ /* ignore */ }});
-                document.removeEventListener('touchstart', unlock, true);
-                document.removeEventListener('click', unlock, true);
-              }};
-              document.addEventListener('touchstart', unlock, true);
-              document.addEventListener('click', unlock, true);
-            }});
-          }}
-        }}
-        if (document.readyState === 'complete' || document.readyState === 'interactive') {{
-          tryPlay();
-        }} else {{
-          document.addEventListener('DOMContentLoaded', tryPlay, {{ once: true }});
-        }}
-      }})();
-    </script>
     """
-    st.markdown(audio_html, unsafe_allow_html=True)
+
+    script_html = ""
+    if consent:
+        script_html = f"""
+        <script>
+          (function() {{
+            const a = document.getElementById("{audio_id}");
+            if (!a) return;
+
+            function tryPlay() {{
+              const p = a.play();
+              if (p && typeof p.then === "function") {{
+                p.catch(() => {{
+                  // If autoplay is blocked, unlock on the next user gesture
+                  const unlock = () => {{
+                    a.play().catch(() => {{ /* ignore */ }});
+                    document.removeEventListener('touchstart', unlock, true);
+                    document.removeEventListener('click', unlock, true);
+                  }};
+                  document.addEventListener('touchstart', unlock, true);
+                  document.addEventListener('click', unlock, true);
+                }});
+              }}
+            }}
+
+            if (document.readyState === 'complete' || document.readyState === 'interactive') {{
+              tryPlay();
+            }} else {{
+              document.addEventListener('DOMContentLoaded', tryPlay, {{ once: true }});
+            }}
+          }})();
+        </script>
+        """
+
+    st.markdown(audio_html + script_html, unsafe_allow_html=True)
 
 # --- PDF Generation Class ---
 class PDF(FPDF):
@@ -259,6 +285,8 @@ if "input_accent" not in st.session_state: st.session_state.input_accent = 'en-U
 if "output_accent" not in st.session_state: st.session_state.output_accent = 'com'
 # --- FIX: Added session_started flag ---
 if "session_started" not in st.session_state: st.session_state.session_started = False
+# --- Consent state ---
+if "autoplay_consent" not in st.session_state: st.session_state.autoplay_consent = False
 
 THEME = DARK if st.session_state.theme == "dark" else LIGHT
 
@@ -301,6 +329,15 @@ else:
             output_accent_options = {'American (US)': 'com', 'British (UK)': 'co.uk', 'Indian': 'co.in'}
             selected_output_label = st.selectbox("Assistant's Accent (for output)", options=list(output_accent_options.keys()), index=list(output_accent_options.values()).index(st.session_state.output_accent))
             st.session_state.output_accent = output_accent_options[selected_output_label]
+
+            # --- Autoplay consent checkbox ---
+            st.session_state.autoplay_consent = st.checkbox(
+                "I consent to auto-play audio replies on this device",
+                value=st.session_state.autoplay_consent,
+                help="On mobile, autoplay may need one tap after consenting to unlock."
+            )
+            if st.session_state.autoplay_consent:
+                st.caption("Autoplay enabled. If nothing plays immediately on mobile, tap once anywhere to unlock audio.")
 
     st.markdown(f"""
     <style>
@@ -372,7 +409,8 @@ else:
                 spoken_text = raw_answer_text + " Is there anything else I can help with?"
                 audio_b64 = text_to_audio_b64(spoken_text, st.session_state.output_accent)
                 if audio_b64:
-                    render_audio_player_b64(audio_b64)
+                    # Pass consent flag to the renderer
+                    render_audio_player_b64(audio_b64, st.session_state.autoplay_consent)
 
             if pdf_filename:
                 pdf_path = os.path.join(CHEATSHEET_PATH, pdf_filename)
