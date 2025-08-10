@@ -254,8 +254,8 @@ st.markdown(f"""
 # --- NEW: Top Bar Layout with Toggle Switch ---
 col1, col2 = st.columns([8, 1])
 with col1:
-    st.markdown("<div class='topbar-custom'>Ophthalmology AI Assistant</div>", unsafe_allow_html=True)
-with col2:
+    st.markdown("<div class='topbar-custom'>Ophtha Bot : AI Chatbot for Ophthalmology </div>", unsafe_allow_html=True)
+
     # Determine the current state for the toggle
     is_dark_on = st.session_state.theme == "dark"
 
