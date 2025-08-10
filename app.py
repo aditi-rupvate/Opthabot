@@ -4,6 +4,7 @@ import uuid
 import time
 import base64
 import streamlit as st
+from streamlit.components.v1 import html as st_html
 from fpdf import FPDF
 import fitz # PyMuPDF
 from langchain.agents import AgentExecutor, create_react_agent
@@ -31,7 +32,7 @@ disclaimer_text = "— Note: This output is for academic purposes only and must 
 
 # --- Backend Components ---
 embeddings = GoogleGenerativeAIEmbeddings(model="models/embedding-001", google_api_key=GOOGLE_API_KEY)
-llm = ChatGoogleGenerativeAI(model="gemini-1.5-flash-latest", temperature=0.3, google_api_key=GOOGLE_API_KEY)
+llm = ChatGoogleGenerativeAI(model="gemini-1.5-flash-latest", temperature=0.3, google_api_key=GoogleGenerativeAIEmbeddings
 
 # --- Text-to-Speech: mobile-safe (returns base64 + renders HTML audio) ---
 def text_to_audio_b64(text: str, tld: str) -> str | None:
@@ -51,43 +52,98 @@ def text_to_audio_b64(text: str, tld: str) -> str | None:
         st.warning(f"Could not generate audio response: {e}")
         return None
 
-def render_audio_player_b64(audio_b64: str):
-    # Mobile-safe autoplay with fallback on first user gesture (iOS/Android)
+def render_audio_player_b64(audio_b64: str, consent: bool | None = None):
+    """
+    If consent is False/None -> show visible controls (no autoplay).
+    If consent is True      -> try autoplay; if blocked, show a 'Tap to play' floating button and
+                               also listen for pointer/keyboard to unlock. Uses components.html so JS executes.
+    """
+    if consent is None:
+        consent = bool(st.session_state.get("autoplay_consent", False))
+
     audio_id = f"audio_{uuid.uuid4().hex}"
-    audio_html = f"""
-    <audio id="{audio_id}" autoplay playsinline preload="auto"
-           style="width:0;height:0;visibility:hidden;" controlslist="nodownload noplaybackrate"
-           src="data:audio/mpeg;base64,{audio_b64}">
-      <source src="data:audio/mpeg;base64,{audio_b64}" type="audio/mpeg">
+
+    if not consent:
+        # Visible, manual play controls (no JS needed)
+        html = """
+        <audio id="%s" controls playsinline preload="auto" style="width:100%%;height:36px;"
+               src="data:audio/mpeg;base64,%s">
+          <source src="data:audio/mpeg;base64,%s" type="audio/mpeg">
+        </audio>
+        """ % (audio_id, audio_b64, audio_b64)
+        st_html(html, height=50)
+        return
+
+    # Consent given: hidden element + robust unlock script
+    html = """
+    <audio id="%s" autoplay playsinline preload="auto"
+           style="position:absolute;left:-9999px;width:1px;height:1px;opacity:0;pointer-events:none;"
+           src="data:audio/mpeg;base64,%s">
+      <source src="data:audio/mpeg;base64,%s" type="audio/mpeg">
     </audio>
     <script>
-      (function() {{
-        const a = document.getElementById("{audio_id}");
-        if (!a) return;
-        function tryPlay() {{
-          const p = a.play();
-          if (p && typeof p.then === "function") {{
-            p.catch(() => {{
-              // If autoplay is blocked, unlock on the next user gesture
-              const unlock = () => {{
-                a.play().catch(() => {{ /* ignore */ }});
-                document.removeEventListener('touchstart', unlock, true);
-                document.removeEventListener('click', unlock, true);
-              }};
-              document.addEventListener('touchstart', unlock, true);
-              document.addEventListener('click', unlock, true);
-            }});
-          }}
-        }}
-        if (document.readyState === 'complete' || document.readyState === 'interactive') {{
-          tryPlay();
-        }} else {{
-          document.addEventListener('DOMContentLoaded', tryPlay, {{ once: true }});
-        }}
-      }})();
+    (function(){
+      var id = "%s";
+      function el(){ return document.getElementById(id); }
+
+      function tryPlay(a){
+        if(!a) return;
+        try{
+          var p = a.play();
+          if(p && typeof p.then === "function"){
+            p.then(function(){ /* playing */ })
+             .catch(function(){ createUnlock(a); });
+          }
+        }catch(e){
+          createUnlock(a);
+        }
+      }
+
+      function createUnlock(a){
+        if(window.__audioUnlockBtn__) return;
+
+        var btn = document.createElement('button');
+        btn.type = 'button';
+        btn.textContent = '🔊 Tap to play';
+        btn.style.cssText = 'position:fixed;bottom:16px;right:16px;padding:10px 14px;'
+          + 'border-radius:12px;border:1px solid #ccc;background:#fff;'
+          + 'box-shadow:0 2px 10px rgba(0,0,0,.12);z-index:2147483647;'
+          + 'font-size:14px;cursor:pointer;';
+        window.__audioUnlockBtn__ = btn;
+
+        function unlock(){
+          try{ a.load(); }catch(_){}
+          a.muted = false; a.volume = 1;
+          a.play().then(remove).catch(function(){ /* keep button shown */ });
+        }
+
+        function remove(){
+          if(btn && btn.parentNode) btn.parentNode.removeChild(btn);
+          window.__audioUnlockBtn__ = null;
+          document.removeEventListener('pointerdown', unlock, true);
+          document.removeEventListener('keydown', onKey, true);
+        }
+
+        function onKey(e){ if(e.key === ' ' || e.key === 'Enter') unlock(); }
+
+        btn.addEventListener('click', unlock, { once:true });
+        document.addEventListener('pointerdown', unlock, true);
+        document.addEventListener('keydown', onKey, true);
+        document.body.appendChild(btn);
+      }
+
+      var attempts = 0, maxAttempts = 40;
+      (function wait(){
+        var a = el();
+        if(a){ tryPlay(a); }
+        else if(attempts++ < maxAttempts){ setTimeout(wait, 100); }
+      })();
+    })();
     </script>
-    """
-    st.markdown(audio_html, unsafe_allow_html=True)
+    """ % (audio_id, audio_b64, audio_b64, audio_id)
+
+    # Height 0 so the iframe doesn't take space; JS will add a floating button if needed
+    st_html(html, height=0)
 
 # --- PDF Generation Class ---
 class PDF(FPDF):
@@ -127,8 +183,8 @@ def create_formatted_pdf(text_content: str, topic: str) -> str:
     pdf.ln(10)
     line_height = 7
     pdf.set_text_color(50, 50, 50)
-    for line in text_content.split('\n'):
-        line = strip = line.strip()
+    for raw in text_content.split('\n'):
+        line = raw.strip()
         if not line:
             continue
         if line.startswith('## '):
@@ -212,7 +268,6 @@ def handle_query_logic(query: str, session_id: str = None):
     agent = create_react_agent(llm, tools, prompt)
     
     memory = ConversationBufferMemory(memory_key="chat_history", return_messages=True)
-    
     for msg in st.session_state.chat_history:
         if "user" in msg:
             memory.chat_memory.add_user_message(msg["user"])
@@ -259,6 +314,8 @@ if "input_accent" not in st.session_state: st.session_state.input_accent = 'en-U
 if "output_accent" not in st.session_state: st.session_state.output_accent = 'com'
 # --- FIX: Added session_started flag ---
 if "session_started" not in st.session_state: st.session_state.session_started = False
+# --- Consent state ---
+if "autoplay_consent" not in st.session_state: st.session_state.autoplay_consent = False
 
 THEME = DARK if st.session_state.theme == "dark" else LIGHT
 
@@ -270,7 +327,7 @@ if not st.session_state.session_started:
     st.markdown("This one-time action enables voice features on mobile devices.")
     if st.button("Start Session", use_container_width=True, type="primary"):
         st.session_state.session_started = True
-        
+        st.rerun()
 else:
     # --- Main Application UI ---
     with st.sidebar:
@@ -302,12 +359,21 @@ else:
             selected_output_label = st.selectbox("Assistant's Accent (for output)", options=list(output_accent_options.keys()), index=list(output_accent_options.values()).index(st.session_state.output_accent))
             st.session_state.output_accent = output_accent_options[selected_output_label]
 
+            # --- Autoplay consent checkbox ---
+            st.session_state.autoplay_consent = st.checkbox(
+                "I consent to auto-play audio replies on this device",
+                value=st.session_state.autoplay_consent,
+                help="On mobile, autoplay may need one tap after consenting to unlock."
+            )
+            if st.session_state.autoplay_consent:
+                st.caption("Autoplay enabled. If nothing plays immediately on mobile, tap once anywhere to unlock audio. Also check the iPhone mute switch.")
+
     st.markdown(f"""
     <style>
         .stApp {{ background: {THEME['bg']}; color: {THEME['text']}; }}
         .topbar-custom {{ background: {THEME['bar']}; border-radius: 16px; padding: 1.3em 1.2em 1.15em 2.1em; margin-bottom: 1.6em; box-shadow: 0 2px 12px 0 rgba(44,46,66,0.06); font-size: 1.55rem; font-weight: 800; letter-spacing: .02em; }}
         .msg-user {{ background: {THEME['user']}; color: {THEME['text']}; border-radius: 16px 16px 4px 20px; margin-bottom: 0.3em; padding: 1em 1.35em; width: fit-content; max-width: 85%; font-size: 1.13rem; border: 1.5px solid {THEME['border']}; margin-left: auto; margin-right: 0; text-align: right; box-shadow: 0 1px 12px 0 rgba(55,96,148,0.05); word-break: break-word; }}
-        .msg-bot {{ background: {THEME['bot']}; color: {THEME['text']}; border-radius: 16px 16px 20px 4px; margin-bottom: 0.7em; padding: 1.08em 1.23em 1em 1.18em; width: fit-content; max-width: 85%; font-size: 1.13rem; border: 1.5px solid {THEME['border']}; margin-right: auto; margin-left: 0; text-align: left; box-shadow: 0 1px 12px 0 rgba(44,46,66,0.05); word-break: break-word; }}
+        .msg-bot {{ background: {THEME['bot']}; color: {THEME['text']}; border-radius: 16px 16px 20px 4px; margin-bottom: 0.7em; padding: 1.08em 1.23em 1em 1.18em; width: fit-content; max-width: 85%; font-size: 1.13rem; border: 1.5px solid {THEME['border']}; margin-right: auto; margin-left: 0; text-align: left; box-shadow: 0 1px 12px 0 rgba(44,46,66,0.05); }}
         [data-testid="stExpander"] {{ border-color: {THEME['border']}; background: {THEME['expander']}; }}
         .stButton>button, .stDownloadButton>button {{ border: 1px solid {THEME['border']}; }}
         .note-text {{ color: #787878; font-size: 0.9rem; }}
@@ -363,16 +429,17 @@ else:
 
         with st.spinner("Thinking..."):
             answer, pdf_filename = handle_query_logic(user_prompt, st.session_state.get("session_id"))
-            clean_text = re.sub(r'<.*?>', '', answer); raw_answer_text = clean_text.replace('`', '').replace('*', '')
+            clean_text = re.sub(r'<.*?>', '', answer)
+            raw_answer_text = clean_text.replace('`', '').replace('*', '')
             full_answer_html = f"{answer}<br><span class='note-text'>{disclaimer_text}</span>"
-            
+
             st.markdown(f"<div class='msg-bot'>{full_answer_html}</div>", unsafe_allow_html=True)
 
             if st.session_state.voice_enabled:
                 spoken_text = raw_answer_text + " Is there anything else I can help with?"
                 audio_b64 = text_to_audio_b64(spoken_text, st.session_state.output_accent)
                 if audio_b64:
-                    render_audio_player_b64(audio_b64)
+                    render_audio_player_b64(audio_b64, st.session_state.autoplay_consent)
 
             if pdf_filename:
                 pdf_path = os.path.join(CHEATSHEET_PATH, pdf_filename)
