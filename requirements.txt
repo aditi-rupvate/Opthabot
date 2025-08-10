@@ -8,3 +8,5 @@ faiss-cpu
 pydantic
 google-generativeai
 langchainhub
+streamlit-mic-recorder
+gTTS
