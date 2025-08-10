@@ -197,6 +197,26 @@ if "active_doc_name" not in st.session_state:
 
 THEME = DARK if st.session_state["theme"] == "dark" else LIGHT
 
+# --- NEW: Sidebar for Settings ---
+with st.sidebar:
+    st.header("Settings")
+    # Determine the current state for the toggle
+    is_dark_on = st.session_state.theme == "dark"
+
+    # Create the toggle switch
+    toggled = st.toggle(
+        "Dark Mode",
+        value=is_dark_on,
+        key="theme_toggle",
+        help="Switch between light and dark themes",
+    )
+
+    # If the toggle's state is different from the session state, update it
+    if toggled != is_dark_on:
+        st.session_state.theme = "dark" if toggled else "light"
+        st.rerun()
+
+# --- Main UI Styling (Unchanged) ---
 st.markdown(f"""
 <style>
     .stApp {{ background: {THEME['bg']}; color: {THEME['text']}; }}
@@ -240,10 +260,6 @@ st.markdown(f"""
     }}
     .stButton>button, .stDownloadButton>button {{ border: 1px solid {THEME['border']}; }}
     .note-text {{ color: #787878; font-size: 0.9rem; }}
-    /* Align toggle switch nicely */
-    div[data-testid="stHorizontalBlock"] {{
-        align-items: center;
-    }}
     @media only screen and (max-width: 768px) {{
         .topbar-custom {{ font-size: 1.2rem; padding: 1em; text-align: center; }}
         .msg-user, .msg-bot {{ font-size: 0.95rem; max-width: 95%; }}
@@ -251,27 +267,8 @@ st.markdown(f"""
 </style>
 """, unsafe_allow_html=True)
 
-# --- NEW: Top Bar Layout with Toggle Switch ---
-col1, col2 = st.columns([8, 1])
-with col1:
-    st.markdown("<div class='topbar-custom'>Ophtha Bot : AI Chatbot for Ophthalmology </div>", unsafe_allow_html=True)
-
-    # Determine the current state for the toggle
-    is_dark_on = st.session_state.theme == "dark"
-
-    # Create the toggle switch
-    toggled = st.toggle(
-        "Theme Toggle", # Hidden label
-        value=is_dark_on,
-        key="theme_toggle",
-        help="Switch between light and dark mode", # This is the hint
-        label_visibility="collapsed"
-    )
-
-    # If the toggle's state is different from the session state, update it
-    if toggled != is_dark_on:
-        st.session_state.theme = "dark" if toggled else "light"
-        st.rerun()
+# --- Top Bar (Simplified to just the title) ---
+st.markdown("<div class='topbar-custom'>Ophthalmology AI Assistant</div>", unsafe_allow_html=True)
 
 # --- Chat History, Upload, and other logic remains the same ---
 for entry in st.session_state.chat_history:
