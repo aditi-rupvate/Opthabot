@@ -10,12 +10,12 @@ from langchain.chains import RetrievalQA, LLMChain
 from langchain.text_splitter import RecursiveCharacterTextSplitter
 from langchain_community.vectorstores import FAISS
 from langchain_google_genai import ChatGoogleGenerativeAI, GoogleGenerativeAIEmbeddings
-from langchain.prompts import PromptTemplate, ChatPromptTemplate, MessagesPlaceholder
+from langchain.prompts import PromptTemplate
+from langchain import hub
 from langchain.tools import StructuredTool
 from streamlit_mic_recorder import speech_to_text
 from gtts import gTTS
 from langchain.memory import ConversationBufferMemory
-from langchain_core.messages import AIMessage, HumanMessage
 
 # --- 1. Configuration ---
 GOOGLE_API_KEY = st.secrets.get("GOOGLE_API_KEY", "YOUR_DEFAULT_API_KEY_HERE")
@@ -122,7 +122,7 @@ def create_formatted_pdf(text_content: str, topic: str) -> str:
     pdf.output(filepath)
     return filename
 
-# --- Main Query Logic (with Corrected Agent and Memory) ---
+# --- Main Query Logic (with Final Corrected Agent) ---
 def handle_query_logic(query: str, session_id: str = None):
     if session_id:
         temp_db_path = os.path.join(TEMP_STORAGE_PATH, session_id)
@@ -158,27 +158,21 @@ def handle_query_logic(query: str, session_id: str = None):
         StructuredTool.from_function(func=cheatsheet_generator_func, name="CheatsheetGeneratorTool", description="Use ONLY when explicitly asked for a downloadable PDF or 'cheat sheet'.")
     ]
     
-    # --- FIX: Manually construct the prompt and memory correctly ---
+    # --- FIX: Use the standard ReAct prompt from the hub and insert the system message ---
+    base_prompt = hub.pull("hwchase17/react-chat")
     system_instruction = "You are an expert ophthalmology assistant. Your purpose is to answer questions strictly related to ophthalmology or the provided documents. If the user asks a question that is outside of this scope, you must politely decline and state that you can only answer questions about ophthalmology."
     
-    prompt = ChatPromptTemplate.from_messages([
-        ("system", system_instruction),
-        MessagesPlaceholder(variable_name="chat_history"),
-        ("human", "{input}"),
-        MessagesPlaceholder(variable_name="agent_scratchpad"),
-    ])
+    # Replace the placeholder in the base prompt with our custom instruction
+    prompt = base_prompt.partial(system_message=system_instruction)
 
     agent = create_react_agent(llm, tools, prompt)
     
-    # Create memory object
     memory = ConversationBufferMemory(memory_key="chat_history", return_messages=True)
     
-    # Populate memory with the current chat history from session state
     for msg in st.session_state.chat_history:
         if "user" in msg:
             memory.chat_memory.add_user_message(msg["user"])
         else:
-            # Strip HTML from bot message before adding to memory
             clean_bot_message = re.sub(r'<.*?>', '', msg["bot"])
             memory.chat_memory.add_ai_message(clean_bot_message)
 
