@@ -33,7 +33,7 @@ disclaimer_text = "— Note: This output is for academic purposes only and must 
 embeddings = GoogleGenerativeAIEmbeddings(model="models/embedding-001", google_api_key=GOOGLE_API_KEY)
 llm = ChatGoogleGenerativeAI(model="gemini-1.5-flash-latest", temperature=0.3, google_api_key=GOOGLE_API_KEY)
 
-# --- Text-to-Speech: mobile-safe (returns base64 + renders HTML audio) ---
+# --- Text-to-Speech: mobile/desktop safe (returns base64 + renders HTML audio) ---
 def text_to_audio_b64(text: str, tld: str) -> str | None:
     try:
         tts = gTTS(text=text, lang='en', tld=tld, slow=False)
@@ -52,46 +52,49 @@ def text_to_audio_b64(text: str, tld: str) -> str | None:
         return None
 
 def render_audio_player_b64(audio_b64: str):
-    # Desktop: hidden autoplay if allowed.
-    # Mobile (iOS/Android/iPadOS): show controls + big "Tap to play" and gesture unlock.
+    """
+    Cross-device voice playback that ALWAYS shows a visible control and a big Tap button,
+    while still attempting muted->unmute autoplay. If autoplay works, the button hides.
+    """
     audio_id = f"audio_{uuid.uuid4().hex}"
     btn_id = f"btn_{uuid.uuid4().hex}"
-    bar_wrap_id = f"wrap_{uuid.uuid4().hex}"
+    wrap_id = f"wrap_{uuid.uuid4().hex}"
     data_url = f"data:audio/mpeg;base64,{audio_b64}"
 
     html = f"""
     <style>
-      /* Floating wrapper for mobile controls */
-      #{bar_wrap_id} {{
+      /* Floating wrapper for the audio control & fallback button (always visible) */
+      #{wrap_id} {{
         position: fixed; left: 12px; right: 12px; bottom: 12px; z-index: 999999;
-        display: none; /* shown on mobile or if desktop autoplay fails */
+        display: block;
       }}
-      #{bar_wrap_id} .bar {{
+      #{wrap_id} .bar {{
         background: rgba(0,0,0,0.06);
         padding: 6px 8px; border-radius: 10px;
         backdrop-filter: blur(8px);
       }}
+      /* Audio control is visible so users can ALWAYS press play */
+      #{audio_id} {{
+        width: 100%;
+      }}
+      /* Big, obvious fallback button */
       #{btn_id} {{
-        display: none; /* shown on mobile or if autoplay fails */
         margin-top: 8px; width: 100%;
         padding: 10px 14px; border-radius: 10px; border: 0;
         background: #1f6feb; color: #fff; font-weight: 700;
         box-shadow: 0 2px 10px rgba(0,0,0,.25); font-size: 16px;
+        display: inline-block; /* visible by default */
+        cursor: pointer;
       }}
-      /* Hidden desktop element */
-      #{audio_id}.__hidden {{
-        width:0;height:0;visibility:hidden;
-      }}
-      /* Visible compact controls (mobile/fallback) */
-      #{audio_id}.__visible {{
-        width:100%;
+      @media (min-width: 700px) {{
+        /* Keep it tidy on larger screens */
+        #{wrap_id} {{ left: 20px; right: auto; width: 360px; }}
       }}
     </style>
 
-    <!-- Hidden by default; configured by JS based on device -->
-    <div id="{bar_wrap_id}">
+    <div id="{wrap_id}">
       <div class="bar">
-        <audio id="{audio_id}" class="__hidden" preload="auto" playsinline controls
+        <audio id="{audio_id}" preload="auto" playsinline controls
                src="{data_url}">
           <source src="{data_url}" type="audio/mpeg">
         </audio>
@@ -101,64 +104,25 @@ def render_audio_player_b64(audio_b64: str):
 
     <script>
       (function() {{
-        const isTouch = navigator.maxTouchPoints > 1;
-        const ua = navigator.userAgent || "";
-        const isiOS = /iPhone|iPad|iPod/i.test(ua) || (isTouch && /Macintosh/i.test(ua)); // iPadOS reports 'Mac'
-        const isAndroid = /Android/i.test(ua);
-        const isMobile = isiOS || isAndroid;
-
         const a = document.getElementById("{audio_id}");
         const btn = document.getElementById("{btn_id}");
-        const wrap = document.getElementById("{bar_wrap_id}");
 
-        // Stop older injected audios to avoid overlaps
+        // Pause any previous audio elements we injected to avoid overlaps
         document.querySelectorAll('audio[id^="audio_"]').forEach(el => {{
           if (el !== a) {{ try {{ el.pause(); }} catch(e) {{}} }}
         }});
 
-        function setDesktopUI() {{
-          wrap.style.display = "none";
-          a.classList.add("__hidden");
-          a.classList.remove("__visible");
-          a.controls = false;
-        }}
-        function setMobileUI(showButton=true) {{
-          wrap.style.display = "block";
-          a.classList.remove("__hidden");
-          a.classList.add("__visible");
-          a.controls = true;
-          btn.style.display = showButton ? "inline-block" : "none";
-        }}
-        function hideMobileExtras() {{
+        function hideButton() {{
           btn.style.display = "none";
-          // a.controls = false; // uncomment if you want to auto-hide controls after start
-        }}
-
-        function tryAutoplayMuted(thenUnmute=true) {{
-          try {{
-            a.currentTime = 0;
-            a.volume = 1.0;
-            a.muted = true;
-            const p = a.play();
-            if (p && typeof p.then === "function") {{
-              return p.then(() => {{
-                if (thenUnmute) {{
-                  setTimeout(() => {{
-                    try {{ a.muted = false; a.volume = 1.0; }} catch(e) {{}}
-                  }}, 60);
-                }}
-                return true;
-              }}).catch(() => false);
-            }}
-          }} catch(e) {{}}
-          return Promise.resolve(false);
         }}
 
         function attachGestureUnlock() {{
           const unlock = () => {{
             try {{
-              a.muted = false; a.volume = 1.0; a.currentTime = 0;
-              a.play().then(() => hideMobileExtras()).catch(() => {{}});
+              a.muted = false;
+              a.volume = 1.0;
+              a.currentTime = 0;
+              a.play().then(() => hideButton()).catch(() => {{}});
             }} catch(e) {{}}
             document.removeEventListener("click", unlock, true);
             document.removeEventListener("touchstart", unlock, true);
@@ -170,20 +134,30 @@ def render_audio_player_b64(audio_b64: str):
           btn.addEventListener("click", (e) => {{ e.preventDefault(); unlock(); }}, {{ once: true }});
         }}
 
-        async function run() {{
-          if (isMobile) {{
-            setMobileUI(true);                 // show controls + button
-            const ok = await tryAutoplayMuted(true);
-            if (ok) hideMobileExtras();        // autoplay worked, hide button
-            else attachGestureUnlock();        // need a tap
-          }} else {{
-            setDesktopUI();                    // hidden audio
-            const ok = await tryAutoplayMuted(true);
-            if (!ok) {{                        // desktop autoplay blocked -> show controls like mobile
-              setMobileUI(true);
-              attachGestureUnlock();
+        async function tryAutoplay() {{
+          try {{
+            a.currentTime = 0;
+            a.volume = 1.0;
+            a.muted = true;                 // muted autoplay first
+            const p = a.play();
+            if (p && typeof p.then === "function") {{
+              await p;
+              setTimeout(() => {{            // unmute shortly after start
+                try {{ a.muted = false; a.volume = 1.0; }} catch(e) {{}}
+              }}, 80);
+              hideButton();                  // autoplay worked
+              return true;
             }}
+          }} catch (e) {{
+            // Autoplay blocked
           }}
+          return false;
+        }}
+
+        function run() {{
+          tryAutoplay().then(ok => {{
+            if (!ok) attachGestureUnlock();  // show button + wait for gesture
+          }});
         }}
 
         if (document.readyState === "complete" || document.readyState === "interactive") {{
@@ -192,15 +166,9 @@ def render_audio_player_b64(audio_b64: str):
           document.addEventListener("DOMContentLoaded", run, {{ once: true }});
         }}
 
-        // Retry when page becomes visible again (Streamlit rerun/tab switch)
+        // If page becomes visible again (Streamlit rerun/tab switch), retry autoplay
         document.addEventListener("visibilitychange", () => {{
-          if (!document.hidden) {{
-            if (isMobile) {{
-              tryAutoplayMuted(true).then(success => {{ if (success) hideMobileExtras(); }});
-            }} else {{
-              tryAutoplayMuted(true);
-            }}
-          }}
+          if (!document.hidden) tryAutoplay().then(ok => {{ if (ok) hideButton(); }});
         }});
       }})();
     </script>
@@ -424,7 +392,7 @@ else:
         .stApp {{ background: {THEME['bg']}; color: {THEME['text']}; }}
         .topbar-custom {{ background: {THEME['bar']}; border-radius: 16px; padding: 1.3em 1.2em 1.15em 2.1em; margin-bottom: 1.6em; box-shadow: 0 2px 12px 0 rgba(44,46,66,0.06); font-size: 1.55rem; font-weight: 800; letter-spacing: .02em; }}
         .msg-user {{ background: {THEME['user']}; color: {THEME['text']}; border-radius: 16px 16px 4px 20px; margin-bottom: 0.3em; padding: 1em 1.35em; width: fit-content; max-width: 85%; font-size: 1.13rem; border: 1.5px solid {THEME['border']}; margin-left: auto; margin-right: 0; text-align: right; box-shadow: 0 1px 12px 0 rgba(55,96,148,0.05); word-break: break-word; }}
-        .msg-bot {{ background: {THEME['bot']}; color: {THEME['text']}; border-radius: 16px 16px 20px 4px; margin-bottom: 0.7em; padding: 1.08em 1.23em 1em 1.18em; width: fit-content; max-width: 85%; font-size: 1.13rem; border: 1.5px solid {THEME['border']}; margin-right: auto; margin-left: 0; text-align: left; box-shadow: 0 1px 12px 0 rgba(44,46,66,0.05); word-break: break-word; }}
+        .msg-bot {{ background: {THEME['bot']}; color: {THEME['text']}; border-radius: 16px 16px 20px 4px; margin-bottom: 0.7em; padding: 1.08em 1.23em 1em 1.18em; width: fit-content; max-width: 85%; font-size: 1.13rem; border: 1.5px solid {THEME['border']}; margin-right: auto; margin-left: 0; text-align: left; box-shadow: 0 1px 12px 0 rgba(44,46,66,0.05); }}
         [data-testid="stExpander"] {{ border-color: {THEME['border']}; background: {THEME['expander']}; }}
         .stButton>button, .stDownloadButton>button {{ border: 1px solid {THEME['border']}; }}
         .note-text {{ color: #787878; font-size: 0.9rem; }}
