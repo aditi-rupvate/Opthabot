@@ -52,10 +52,10 @@ def text_to_audio_b64(text: str, tld: str) -> str | None:
         return None
 
 def render_audio_player_b64(audio_b64: str):
+    # This will now autoplay successfully on mobile after the initial "Start Session" tap
     audio_html = f"""
-    <audio controls style="width: 100%; max-width: 320px;">
+    <audio autoplay style="display:none;">
       <source src="data:audio/mp3;base64,{audio_b64}" type="audio/mp3">
-      Your browser does not support the audio element.
     </audio>
     """
     st.markdown(audio_html, unsafe_allow_html=True)
@@ -221,149 +221,134 @@ LIGHT = {"bg": "#f8fafb", "bar": "#fff", "bot": "#e9eef6", "user": "#d1e7dd", "t
 DARK = {"bg": "#18181c", "bar": "#202126", "bot": "#232733", "user": "#22577a", "text": "#f3f5f8", "input": "#242730", "border": "#26282f", "expander": "#24272e"}
 
 # Initialize session state variables
-if "theme" not in st.session_state:
-    st.session_state.theme = "dark"
-if "chat_history" not in st.session_state:
-    st.session_state.chat_history = []
-if "session_id" not in st.session_state:
-    st.session_state.session_id = None
-if "active_doc_name" not in st.session_state:
-    st.session_state.active_doc_name = None
-if "voice_enabled" not in st.session_state:
-    st.session_state.voice_enabled = False
-if "input_accent" not in st.session_state:
-    st.session_state.input_accent = 'en-US'
-if "output_accent" not in st.session_state:
-    st.session_state.output_accent = 'com'
+if "theme" not in st.session_state: st.session_state.theme = "dark"
+if "chat_history" not in st.session_state: st.session_state.chat_history = []
+if "session_id" not in st.session_state: st.session_state.session_id = None
+if "active_doc_name" not in st.session_state: st.session_state.active_doc_name = None
+if "voice_enabled" not in st.session_state: st.session_state.voice_enabled = False
+if "input_accent" not in st.session_state: st.session_state.input_accent = 'en-US'
+if "output_accent" not in st.session_state: st.session_state.output_accent = 'com'
+# --- FIX: Added session_started flag ---
+if "session_started" not in st.session_state: st.session_state.session_started = False
 
 THEME = DARK if st.session_state.theme == "dark" else LIGHT
 
-# --- Sidebar for Settings ---
-with st.sidebar:
-    st.header("Settings")
-    is_dark_on = st.session_state.theme == "dark"
-    toggled = st.toggle("Dark Mode", value=is_dark_on, key="theme_toggle", help="Switch themes")
-    if toggled != is_dark_on:
-        st.session_state.theme = "dark" if toggled else "light"
+# --- FIX: "Initial Interaction" Gate ---
+if not st.session_state.session_started:
+    st.markdown("<br><br>", unsafe_allow_html=True)
+    st.title("Ophthalmology AI Assistant")
+    st.subheader("Tap the button below to start your session.")
+    st.markdown("This one-time action enables voice features on mobile devices.")
+    if st.button("Start Session", use_container_width=True, type="primary"):
+        st.session_state.session_started = True
         st.rerun()
-
-    st.divider()
-    st.header("Voice Settings")
-    st.session_state.voice_enabled = st.toggle("Enable Voice Chat", value=st.session_state.voice_enabled, help="Enable voice input and spoken responses.")
-
-    if st.session_state.voice_enabled:
-        input_accent_options = {
-            'American (US)': 'en-US', 
-            'British (UK)': 'en-GB', 
-            'Indian': 'en-IN',
-            'Australian': 'en-AU',
-            'Canadian': 'en-CA',
-            'South African': 'en-ZA'
-        }
-        current_accent_index = 0
-        try:
-            current_accent_index = list(input_accent_options.values()).index(st.session_state.input_accent)
-        except ValueError:
-            pass
-        selected_input_label = st.selectbox("Your Accent (for input)", options=list(input_accent_options.keys()), index=current_accent_index)
-        st.session_state.input_accent = input_accent_options[selected_input_label]
-        
-        output_accent_options = {'American (US)': 'com', 'British (UK)': 'co.uk', 'Indian': 'co.in'}
-        selected_output_label = st.selectbox(
-            "Assistant's Accent (for output)",
-            options=list(output_accent_options.keys()),
-            index=list(output_accent_options.values()).index(st.session_state.output_accent)
-        )
-        st.session_state.output_accent = output_accent_options[selected_output_label]
-
-# --- UI Styling ---
-st.markdown(f"""
-<style>
-    .stApp {{ background: {THEME['bg']}; color: {THEME['text']}; }}
-    .topbar-custom {{ background: {THEME['bar']}; border-radius: 16px; padding: 1.3em 1.2em 1.15em 2.1em; margin-bottom: 1.6em; box-shadow: 0 2px 12px 0 rgba(44,46,66,0.06); font-size: 1.55rem; font-weight: 800; letter-spacing: .02em; }}
-    .msg-user {{ background: {THEME['user']}; color: {THEME['text']}; border-radius: 16px 16px 4px 20px; margin-bottom: 0.3em; padding: 1em 1.35em; width: fit-content; max-width: 85%; font-size: 1.13rem; border: 1.5px solid {THEME['border']}; margin-left: auto; margin-right: 0; text-align: right; box-shadow: 0 1px 12px 0 rgba(55,96,148,0.05); word-break: break-word; }}
-    .msg-bot {{ background: {THEME['bot']}; color: {THEME['text']}; border-radius: 16px 16px 20px 4px; margin-bottom: 0.7em; padding: 1.08em 1.23em 1em 1.18em; width: fit-content; max-width: 85%; font-size: 1.13rem; border: 1.5px solid {THEME['border']}; margin-right: auto; margin-left: 0; text-align: left; box-shadow: 0 1px 12px 0 rgba(44,46,66,0.05); word-break: break-word; }}
-    [data-testid="stExpander"] {{ border-color: {THEME['border']}; background: {THEME['expander']}; }}
-    .stButton>button, .stDownloadButton>button {{ border: 1px solid {THEME['border']}; }}
-    .note-text {{ color: #787878; font-size: 0.9rem; }}
-    @media only screen and (max-width: 768px) {{ .topbar-custom {{ font-size: 1.2rem; padding: 1em; text-align: center; }} .msg-user, .msg-bot {{ font-size: 0.95rem; max-width: 95%; }} }}
-</style>
-""", unsafe_allow_html=True)
-
-st.markdown("<div class='topbar-custom'>Ophthalmology AI Assistant</div>", unsafe_allow_html=True)
-
-# --- Chat History and Document Handling ---
-for entry in st.session_state.chat_history:
-    if "user" in entry:
-        st.markdown(f"<div class='msg-user'>{entry['user']}</div>", unsafe_allow_html=True)
-    else:
-        st.markdown(f"<div class='msg-bot'>{entry['bot']}</div>", unsafe_allow_html=True)
-        if entry.get("pdf_filename"):
-            pdf_path = os.path.join(CHEATSHEET_PATH, entry["pdf_filename"])
-            if os.path.exists(pdf_path):
-                with open(pdf_path, "rb") as pdf_file:
-                    st.download_button("📥 Download Cheatsheet", pdf_file.read(), entry["pdf_filename"], "application/pdf", key=f"dl_{entry['pdf_filename']}_{uuid.uuid4()}")
-
-with st.expander("Upload a Custom Document"):
-    uploaded_file = st.file_uploader("Upload a PDF", type="pdf")
-    if uploaded_file and st.button("Process Document"):
-        with st.spinner("Processing document..."):
-            session_id = str(uuid.uuid4())
-            temp_dir = os.path.join(TEMP_STORAGE_PATH, session_id)
-            os.makedirs(temp_dir, exist_ok=True)
-            file_path = os.path.join(temp_dir, uploaded_file.name)
-            with open(file_path, "wb") as buffer:
-                buffer.write(uploaded_file.getbuffer())
-            doc = fitz.open(file_path)
-            full_text = "".join(page.get_text() for page in doc)
-            doc.close()
-            texts = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=100).split_text(full_text)
-            FAISS.from_texts(texts, embeddings).save_local(temp_dir)
-            st.session_state.session_id = session_id
-            st.session_state.active_doc_name = uploaded_file.name
-            st.session_state.chat_history.append({"bot": f"Ready for questions about **{uploaded_file.name}**.<br><span class='note-text'>{disclaimer_text}</span>"})
+else:
+    # --- Main Application UI ---
+    with st.sidebar:
+        st.header("Settings")
+        is_dark_on = st.session_state.theme == "dark"
+        toggled = st.toggle("Dark Mode", value=is_dark_on, key="theme_toggle", help="Switch themes")
+        if toggled != is_dark_on:
+            st.session_state.theme = "dark" if toggled else "light"
             st.rerun()
 
-if st.session_state.active_doc_name:
-    st.info(f"Active Document: **{st.session_state.active_doc_name}**")
-    if st.button("Clear Document & Revert to Default"):
-        st.session_state.session_id = None
-        st.session_state.active_doc_name = None
-        st.session_state.chat_history.append({"bot": f"Reverted to default knowledge base.<br><span class='note-text'>{disclaimer_text}</span>"})
-        st.rerun()
-
-# --- Voice and Text Input ---
-user_prompt = None
-if st.session_state.voice_enabled:
-    user_prompt = speech_to_text(language=st.session_state.input_accent, use_container_width=True, just_once=True, key='STT')
-else:
-    user_prompt = st.chat_input("Type your question here...")
-
-if user_prompt:
-    st.markdown(f"<div class='msg-user'>{user_prompt}</div>", unsafe_allow_html=True)
-    st.session_state.chat_history.append({"user": user_prompt})
-
-    with st.spinner("Thinking..."):
-        answer, pdf_filename = handle_query_logic(user_prompt, st.session_state.get("session_id"))
-        
-        clean_text = re.sub(r'<.*?>', '', answer)
-        raw_answer_text = clean_text.replace('`', '').replace('*', '')
-
-        full_answer_html = f"{answer}<br><span class='note-text'>{disclaimer_text}</span>"
-        
-        st.markdown(f"<div class='msg-bot'>{full_answer_html}</div>", unsafe_allow_html=True)
+        st.divider()
+        st.header("Voice Settings")
+        st.session_state.voice_enabled = st.toggle("Enable Voice Chat", value=st.session_state.voice_enabled, help="Enable voice input and spoken responses.")
 
         if st.session_state.voice_enabled:
-            spoken_text = raw_answer_text + " Is there anything else I can help with?"
-            audio_b64 = text_to_audio_b64(spoken_text, st.session_state.output_accent)
-            if audio_b64:
-                render_audio_player_b64(audio_b64)
+            input_accent_options = {
+                'American (US)': 'en-US', 'British (UK)': 'en-GB', 'Indian': 'en-IN',
+                'Australian': 'en-AU', 'Canadian': 'en-CA', 'South African': 'en-ZA'
+            }
+            current_accent_index = 0
+            try:
+                current_accent_index = list(input_accent_options.values()).index(st.session_state.input_accent)
+            except ValueError:
+                pass
+            selected_input_label = st.selectbox("Your Accent (for input)", options=list(input_accent_options.keys()), index=current_accent_index)
+            st.session_state.input_accent = input_accent_options[selected_input_label]
+            
+            output_accent_options = {'American (US)': 'com', 'British (UK)': 'co.uk', 'Indian': 'co.in'}
+            selected_output_label = st.selectbox("Assistant's Accent (for output)", options=list(output_accent_options.keys()), index=list(output_accent_options.values()).index(st.session_state.output_accent))
+            st.session_state.output_accent = output_accent_options[selected_output_label]
 
-        if pdf_filename:
-            pdf_path = os.path.join(CHEATSHEET_PATH, pdf_filename)
-            if os.path.exists(pdf_path):
-                with open(pdf_path, "rb") as pdf_file:
-                    st.download_button("📥 Download Cheatsheet", pdf_file.read(), pdf_filename, "application/pdf", key=f"dl_{pdf_filename}_{uuid.uuid4()}")
+    st.markdown(f"""
+    <style>
+        .stApp {{ background: {THEME['bg']}; color: {THEME['text']}; }}
+        .topbar-custom {{ background: {THEME['bar']}; border-radius: 16px; padding: 1.3em 1.2em 1.15em 2.1em; margin-bottom: 1.6em; box-shadow: 0 2px 12px 0 rgba(44,46,66,0.06); font-size: 1.55rem; font-weight: 800; letter-spacing: .02em; }}
+        .msg-user {{ background: {THEME['user']}; color: {THEME['text']}; border-radius: 16px 16px 4px 20px; margin-bottom: 0.3em; padding: 1em 1.35em; width: fit-content; max-width: 85%; font-size: 1.13rem; border: 1.5px solid {THEME['border']}; margin-left: auto; margin-right: 0; text-align: right; box-shadow: 0 1px 12px 0 rgba(55,96,148,0.05); word-break: break-word; }}
+        .msg-bot {{ background: {THEME['bot']}; color: {THEME['text']}; border-radius: 16px 16px 20px 4px; margin-bottom: 0.7em; padding: 1.08em 1.23em 1em 1.18em; width: fit-content; max-width: 85%; font-size: 1.13rem; border: 1.5px solid {THEME['border']}; margin-right: auto; margin-left: 0; text-align: left; box-shadow: 0 1px 12px 0 rgba(44,46,66,0.05); word-break: break-word; }}
+        [data-testid="stExpander"] {{ border-color: {THEME['border']}; background: {THEME['expander']}; }}
+        .stButton>button, .stDownloadButton>button {{ border: 1px solid {THEME['border']}; }}
+        .note-text {{ color: #787878; font-size: 0.9rem; }}
+        @media only screen and (max-width: 768px) {{ .topbar-custom {{ font-size: 1.2rem; padding: 1em; text-align: center; }} .msg-user, .msg-bot {{ font-size: 0.95rem; max-width: 95%; }} }}
+    </style>
+    """, unsafe_allow_html=True)
 
-        st.session_state.chat_history.append({"bot": full_answer_html, "pdf_filename": pdf_filename})
-        # No rerun is needed here.
+    st.markdown("<div class='topbar-custom'>Ophthalmology AI Assistant</div>", unsafe_allow_html=True)
+
+    for entry in st.session_state.chat_history:
+        if "user" in entry:
+            st.markdown(f"<div class='msg-user'>{entry['user']}</div>", unsafe_allow_html=True)
+        else:
+            st.markdown(f"<div class='msg-bot'>{entry['bot']}</div>", unsafe_allow_html=True)
+            if entry.get("pdf_filename"):
+                pdf_path = os.path.join(CHEATSHEET_PATH, entry["pdf_filename"])
+                if os.path.exists(pdf_path):
+                    with open(pdf_path, "rb") as pdf_file:
+                        st.download_button("📥 Download Cheatsheet", pdf_file.read(), entry["pdf_filename"], "application/pdf", key=f"dl_{entry['pdf_filename']}_{uuid.uuid4()}")
+
+    with st.expander("Upload a Custom Document"):
+        uploaded_file = st.file_uploader("Upload a PDF", type="pdf")
+        if uploaded_file and st.button("Process Document"):
+            with st.spinner("Processing document..."):
+                session_id = str(uuid.uuid4())
+                temp_dir = os.path.join(TEMP_STORAGE_PATH, session_id); os.makedirs(temp_dir, exist_ok=True)
+                file_path = os.path.join(temp_dir, uploaded_file.name)
+                with open(file_path, "wb") as buffer: buffer.write(uploaded_file.getbuffer())
+                doc = fitz.open(file_path)
+                texts = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=100).split_text("".join(page.get_text() for page in doc))
+                doc.close()
+                FAISS.from_texts(texts, embeddings).save_local(temp_dir)
+                st.session_state.session_id = session_id; st.session_state.active_doc_name = uploaded_file.name
+                st.session_state.chat_history.append({"bot": f"Ready for questions about **{uploaded_file.name}**.<br><span class='note-text'>{disclaimer_text}</span>"})
+                st.rerun()
+
+    if st.session_state.active_doc_name:
+        st.info(f"Active Document: **{st.session_state['active_doc_name']}**")
+        if st.button("Clear Document & Revert to Default"):
+            st.session_state.session_id = None; st.session_state.active_doc_name = None
+            st.session_state.chat_history.append({"bot": f"Reverted to default knowledge base.<br><span class='note-text'>{disclaimer_text}</span>"})
+            st.rerun()
+
+    user_prompt = None
+    if st.session_state.voice_enabled:
+        user_prompt = speech_to_text(language=st.session_state.input_accent, use_container_width=True, just_once=True, key='STT')
+    else:
+        user_prompt = st.chat_input("Type your question here...")
+
+    if user_prompt:
+        st.markdown(f"<div class='msg-user'>{user_prompt}</div>", unsafe_allow_html=True)
+        st.session_state.chat_history.append({"user": user_prompt})
+
+        with st.spinner("Thinking..."):
+            answer, pdf_filename = handle_query_logic(user_prompt, st.session_state.get("session_id"))
+            clean_text = re.sub(r'<.*?>', '', answer); raw_answer_text = clean_text.replace('`', '').replace('*', '')
+            full_answer_html = f"{answer}<br><span class='note-text'>{disclaimer_text}</span>"
+            
+            st.markdown(f"<div class='msg-bot'>{full_answer_html}</div>", unsafe_allow_html=True)
+
+            if st.session_state.voice_enabled:
+                spoken_text = raw_answer_text + " Is there anything else I can help with?"
+                audio_b64 = text_to_audio_b64(spoken_text, st.session_state.output_accent)
+                if audio_b64:
+                    render_audio_player_b64(audio_b64)
+
+            if pdf_filename:
+                pdf_path = os.path.join(CHEATSHEET_PATH, pdf_filename)
+                if os.path.exists(pdf_path):
+                    with open(pdf_path, "rb") as pdf_file:
+                        st.download_button("📥 Download Cheatsheet", pdf_file.read(), pdf_filename, "application/pdf", key=f"dl_{pdf_filename}_{uuid.uuid4()}")
+
+            st.session_state.chat_history.append({"bot": full_answer_html, "pdf_filename": pdf_filename})
