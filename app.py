@@ -10,7 +10,7 @@ from langchain.chains import RetrievalQA, LLMChain
 from langchain.text_splitter import RecursiveCharacterTextSplitter
 from langchain_community.vectorstores import FAISS
 from langchain_google_genai import ChatGoogleGenerativeAI, GoogleGenerativeAIEmbeddings
-from langchain.prompts import PromptTemplate, SystemMessagePromptTemplate
+from langchain.prompts import PromptTemplate, SystemMessagePromptTemplate, ChatPromptTemplate, MessagesPlaceholder
 from langchain import hub
 from langchain.tools import StructuredTool
 from streamlit_mic_recorder import speech_to_text
@@ -31,7 +31,7 @@ disclaimer_text = "— Note: This output is for academic purposes only and must 
 embeddings = GoogleGenerativeAIEmbeddings(model="models/embedding-001", google_api_key=GOOGLE_API_KEY)
 llm = ChatGoogleGenerativeAI(model="gemini-1.5-flash-latest", temperature=0.3, google_api_key=GOOGLE_API_KEY)
 
-# --- Text-to-Speech Function (with Accent Control) ---
+# --- Text-to-Speech Function ---
 def text_to_audio_autoplay(text: str, tld: str):
     try:
         tts = gTTS(text=text, lang='en', tld=tld, slow=False)
@@ -121,7 +121,7 @@ def create_formatted_pdf(text_content: str, topic: str) -> str:
     pdf.output(filepath)
     return filename
 
-# --- Main Query Logic (with Domain Constraint) ---
+# --- Main Query Logic (with Corrected Prompt) ---
 def handle_query_logic(query: str, session_id: str = None):
     if session_id:
         temp_db_path = os.path.join(TEMP_STORAGE_PATH, session_id)
@@ -139,14 +139,14 @@ def handle_query_logic(query: str, session_id: str = None):
 
     def concept_explainer_func(topic: str) -> str:
         context = "\n\n".join([doc.page_content for doc in retriever.get_relevant_documents(topic)])
-        prompt = PromptTemplate.from_template("Provide a comprehensive explanation or summary for {topic}.\n\nContext: {context}\nResponse:")
-        chain = LLMChain(llm=llm, prompt=prompt)
+        prompt_template = PromptTemplate.from_template("Provide a comprehensive explanation or summary for {topic}.\n\nContext: {context}\nResponse:")
+        chain = LLMChain(llm=llm, prompt=prompt_template)
         return chain.run(topic=topic, context=context)
 
     def cheatsheet_generator_func(topic: str) -> str:
         context = "\n\n".join([doc.page_content for doc in retriever.get_relevant_documents(topic)])
-        prompt = PromptTemplate.from_template("Create a detailed cheat sheet for {topic} using '##' for headings and '-' for list items.\nContext: {context}\nCheat Sheet:")
-        chain = LLMChain(llm=llm, prompt=prompt)
+        prompt_template = PromptTemplate.from_template("Create a detailed cheat sheet for {topic} using '##' for headings and '-' for list items.\nContext: {context}\nCheat Sheet:")
+        chain = LLMChain(llm=llm, prompt=prompt_template)
         cheatsheet_text = chain.run(topic=topic, context=context)
         pdf_filename = create_formatted_pdf(cheatsheet_text, topic)
         return f"PDF_GENERATED::{pdf_filename}::{cheatsheet_text}"
@@ -157,11 +157,16 @@ def handle_query_logic(query: str, session_id: str = None):
         StructuredTool.from_function(func=cheatsheet_generator_func, name="CheatsheetGeneratorTool", description="Use ONLY when explicitly asked for a downloadable PDF or 'cheat sheet'.")
     ]
     
-    react_prompt = hub.pull("hwchase17/react")
+    # --- FIX: Construct the agent prompt correctly ---
     system_instruction = "You are an expert ophthalmology assistant. Your purpose is to answer questions strictly related to ophthalmology or the provided documents. If the user asks a question that is outside of this scope, you must politely decline and state that you can only answer questions about ophthalmology."
-    react_prompt.messages = [SystemMessagePromptTemplate.from_template(system_instruction)] + react_prompt.messages
+    
+    prompt = ChatPromptTemplate.from_messages([
+        ("system", system_instruction),
+        ("human", "{input}"),
+        MessagesPlaceholder(variable_name="agent_scratchpad"),
+    ])
 
-    agent = create_react_agent(llm, tools, react_prompt)
+    agent = create_react_agent(llm, tools, prompt)
     agent_executor = AgentExecutor(agent=agent, tools=tools, verbose=False, handle_parsing_errors=True, return_intermediate_steps=True)
     response = agent_executor.invoke({"input": query})
     final_answer = response.get('output', "I couldn't find an answer.")
@@ -214,7 +219,6 @@ with st.sidebar:
         output_accent_options = {'American (US)': 'com', 'British (UK)': 'co.uk', 'Indian': 'co.in'}
         selected_output_label = st.selectbox("Assistant's Accent (for output)", options=list(output_accent_options.keys()))
         st.session_state.output_accent = output_accent_options[selected_output_label]
-
 
 # --- UI Styling ---
 st.markdown(f"""
