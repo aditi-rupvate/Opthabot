@@ -12,3 +12,4 @@ streamlit-mic-recorder
 gTTS
 google-cloud-texttospeech
 mutagen
+streamlit-javascript==0.1.0
