@@ -2,7 +2,6 @@ import os
 import re
 import uuid
 import time
-import base64
 import streamlit as st
 from fpdf import FPDF
 import fitz  # PyMuPDF
@@ -33,25 +32,24 @@ disclaimer_text = "— Note: This output is for academic purposes only and must 
 embeddings = GoogleGenerativeAIEmbeddings(model="models/embedding-001", google_api_key=GOOGLE_API_KEY)
 llm = ChatGoogleGenerativeAI(model="gemini-1.5-flash-latest", temperature=0.3, google_api_key=GOOGLE_API_KEY)
 
-# --- Text-to-Speech Function (with Base64 embedding to prevent file errors) ---
-def text_to_audio_b64(text: str, tld: str):
+# --- Text-to-Speech Function (Stable Version) ---
+def text_to_audio_autoplay(text: str, tld: str):
     try:
         tts = gTTS(text=text, lang='en', tld=tld, slow=False)
         audio_filename = os.path.join(CHEATSHEET_PATH, f"response_{uuid.uuid4()}.mp3")
         tts.save(audio_filename)
 
-        with open(audio_filename, "rb") as f:
-            data = f.read()
-            b64_string = base64.b64encode(data).decode()
+        with open(audio_filename, "rb") as audio_file:
+            audio_bytes = audio_file.read()
+            st.audio(audio_bytes, format="audio/mp3", autoplay=True)
+        
+        # Delay to ensure the browser has time to buffer and play the audio
+        time.sleep(2) 
         
         if os.path.exists(audio_filename):
             os.remove(audio_filename)
-        
-        return b64_string
-            
     except Exception as e:
         st.warning(f"Could not generate audio response: {e}")
-        return None
 
 # --- PDF Generation Class ---
 class PDF(FPDF):
@@ -225,6 +223,7 @@ with st.sidebar:
     st.session_state.voice_enabled = st.toggle("Enable Voice Chat", value=st.session_state.voice_enabled, help="Enable voice input and spoken responses.")
 
     if st.session_state.voice_enabled:
+        # --- FIX: Added more input accents ---
         input_accent_options = {
             'American (US)': 'en-US', 
             'British (UK)': 'en-GB', 
@@ -233,11 +232,14 @@ with st.sidebar:
             'Canadian': 'en-CA',
             'South African': 'en-ZA'
         }
+        
+        # To prevent errors if the saved accent is no longer in the list, we find its index safely
         current_accent_index = 0
         try:
             current_accent_index = list(input_accent_options.values()).index(st.session_state.input_accent)
         except ValueError:
-            pass
+            pass # Default to index 0 if not found
+
         selected_input_label = st.selectbox("Your Accent (for input)", options=list(input_accent_options.keys()), index=current_accent_index)
         st.session_state.input_accent = input_accent_options[selected_input_label]
         
@@ -262,25 +264,15 @@ st.markdown(f"""
 st.markdown("<div class='topbar-custom'>Ophthalmology AI Assistant</div>", unsafe_allow_html=True)
 
 # --- Chat History and Document Handling ---
-for i, entry in enumerate(st.session_state.chat_history):
-    if "user" in entry: 
-        st.markdown(f"<div class='msg-user'>{entry['user']}</div>", unsafe_allow_html=True)
+for entry in st.session_state.chat_history:
+    if "user" in entry: st.markdown(f"<div class='msg-user'>{entry['user']}</div>", unsafe_allow_html=True)
     else:
         st.markdown(f"<div class='msg-bot'>{entry['bot']}</div>", unsafe_allow_html=True)
-        # --- FIX: Display "Play" button for each bot message in voice mode ---
-        if st.session_state.voice_enabled and "audio_b64" in entry:
-            audio_html = f"""
-                <audio controls>
-                <source src="data:audio/mp3;base64,{entry['audio_b64']}" type="audio/mp3">
-                </audio>
-                """
-            st.markdown(audio_html, unsafe_allow_html=True)
-
         if entry.get("pdf_filename"):
             pdf_path = os.path.join(CHEATSHEET_PATH, entry["pdf_filename"])
             if os.path.exists(pdf_path):
                 with open(pdf_path, "rb") as pdf_file:
-                    st.download_button("📥 Download Cheatsheet", pdf_file.read(), entry["pdf_filename"], "application/pdf", key=f"dl_{i}")
+                    st.download_button("📥 Download Cheatsheet", pdf_file.read(), entry["pdf_filename"], "application/pdf", key=f"dl_{entry['pdf_filename']}_{uuid.uuid4()}")
 
 with st.expander("Upload a Custom Document"):
     uploaded_file = st.file_uploader("Upload a PDF", type="pdf")
@@ -317,22 +309,32 @@ else:
     user_prompt = st.chat_input("Type your question here...")
 
 if user_prompt:
+    st.markdown(f"<div class='msg-user'>{user_prompt}</div>", unsafe_allow_html=True)
     st.session_state.chat_history.append({"user": user_prompt})
-    
+
     with st.spinner("Thinking..."):
         answer, pdf_filename = handle_query_logic(user_prompt, st.session_state.get("session_id"))
+        
+        # Clean the text for TTS by removing HTML tags and markdown characters
         clean_text = re.sub(r'<.*?>', '', answer) 
         raw_answer_text = clean_text.replace('`', '').replace('*', '')
+
         full_answer_html = f"{answer}<br><span class='note-text'>{disclaimer_text}</span>"
         
-        bot_message = {"bot": full_answer_html, "pdf_filename": pdf_filename}
+        st.markdown(f"<div class='msg-bot'>{full_answer_html}</div>", unsafe_allow_html=True)
 
-        # --- FIX: Generate audio and attach it to the message ---
         if st.session_state.voice_enabled:
+            # Add the follow-up phrase for a more natural conversation
             spoken_text = raw_answer_text + " Is there anything else I can help with?"
-            audio_b64 = text_to_audio_b64(spoken_text, st.session_state.output_accent)
-            if audio_b64:
-                bot_message["audio_b64"] = audio_b64
+            text_to_audio_autoplay(spoken_text, st.session_state.output_accent)
+
+        if pdf_filename:
+            pdf_path = os.path.join(CHEATSHEET_PATH, pdf_filename)
+            if os.path.exists(pdf_path):
+                with open(pdf_path, "rb") as pdf_file:
+                    st.download_button("📥 Download Cheatsheet", pdf_file.read(), pdf_filename, "application/pdf", key=f"dl_{pdf_filename}_{uuid.uuid4()}")
+
+        st.session_state.chat_history.append({"bot": full_answer_html, "pdf_filename": pdf_filename})
         
-        st.session_state.chat_history.append(bot_message)
-        st.rerun()
+        # We do not rerun here to allow the audio to play fully.
+        # The user can click the microphone again for a new query.
