@@ -340,7 +340,7 @@ if not st.session_state.session_started:
     st.markdown("This one-time action enables voice features on mobile devices.")
     if st.button("Start Session", use_container_width=True, type="primary"):
         st.session_state.session_started = True
-        st.rerun()
+        
 else:
     # --- Main Application UI ---
     with st.sidebar:
