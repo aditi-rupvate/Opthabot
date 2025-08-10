@@ -41,10 +41,10 @@ def text_to_audio_autoplay(text: str, tld: str):
 
         with open(audio_filename, "rb") as audio_file:
             audio_bytes = audio_file.read()
+            # This sends the audio to the browser for non-blocking playback.
             st.audio(audio_bytes, format="audio/mp3", autoplay=True)
         
-        # Give a very brief moment for the audio to start before cleanup
-        time.sleep(0.5)
+        time.sleep(0.5) # Brief delay to ensure file is read before deletion
         
         if os.path.exists(audio_filename):
             os.remove(audio_filename)
@@ -207,7 +207,6 @@ if "active_doc_name" not in st.session_state: st.session_state.active_doc_name =
 if "voice_enabled" not in st.session_state: st.session_state.voice_enabled = False
 if "input_accent" not in st.session_state: st.session_state.input_accent = 'en-US'
 if "output_accent" not in st.session_state: st.session_state.output_accent = 'com'
-if "processing" not in st.session_state: st.session_state.processing = False
 
 THEME = DARK if st.session_state.theme == "dark" else LIGHT
 
@@ -238,12 +237,11 @@ st.markdown(f"""
 <style>
     .stApp {{ background: {THEME['bg']}; color: {THEME['text']}; }}
     .topbar-custom {{ background: {THEME['bar']}; border-radius: 16px; padding: 1.3em 1.2em 1.15em 2.1em; margin-bottom: 1.6em; box-shadow: 0 2px 12px 0 rgba(44,46,66,0.06); font-size: 1.55rem; font-weight: 800; letter-spacing: .02em; }}
-    .msg-user {{ background: {THEME['user']}; color: {THEME['text']}; border-radius: 16px 16px 4px 20px; margin-bottom: 0.3em; padding: 1em 1.35em; width: fit-content; max-width: 85%; font-size: 1.13rem; border: 1.5px solid {THEME['border']}; margin-left: auto; margin-right: 0; text-align: right; box-shadow: 0 1px 12px 0 rgba(55,96,148,0.05); word-break: break-word; }}
-    .msg-bot {{ background: {THEME['bot']}; color: {THEME['text']}; border-radius: 16px 16px 20px 4px; margin-bottom: 0.7em; padding: 1.08em 1.23em 1em 1.18em; width: fit-content; max-width: 85%; font-size: 1.13rem; border: 1.5px solid {THEME['border']}; margin-right: auto; margin-left: 0; text-align: left; box-shadow: 0 1px 12px 0 rgba(44,46,66,0.05); word-break: break-word; }}
-    [data-testid="stExpander"] {{ border-color: {THEME['border']}; background: {THEME['expander']}; }}
-    .stButton>button, .stDownloadButton>button {{ border: 1px solid {THEME['border']}; }}
+    div[data-testid="stChatMessage"] {{ background: {THEME['bot']}; border-radius: 16px 16px 20px 4px; border: 1.5px solid {THEME['border']}; box-shadow: 0 1px 12px 0 rgba(44,46,66,0.05); }}
+    div[data-testid="stChatMessage"] div[data-testid="stMarkdown"] {{ color: {THEME['text']}; }}
+    div[data-testid="stChatMessage"][data-testid-role="user"] {{ background: {THEME['user']}; border-radius: 16px 16px 4px 20px; }}
     .note-text {{ color: #787878; font-size: 0.9rem; }}
-    @media only screen and (max-width: 768px) {{ .topbar-custom {{ font-size: 1.2rem; padding: 1em; text-align: center; }} .msg-user, .msg-bot {{ font-size: 0.95rem; max-width: 95%; }} }}
+    @media only screen and (max-width: 768px) {{ .topbar-custom {{ font-size: 1.2rem; padding: 1em; text-align: center; }} }}
 </style>
 """, unsafe_allow_html=True)
 
@@ -251,7 +249,23 @@ st.markdown("<div class='topbar-custom'>Ophthalmology AI Assistant</div>", unsaf
 
 # --- NEW, RE-ARCHITECTED APP FLOW ---
 
-# 1. Display existing chat history
+# 1. Handle new user input
+user_prompt = None
+if st.session_state.voice_enabled:
+    user_prompt = speech_to_text(language=st.session_state.input_accent, use_container_width=True, just_once=True, key=f'STT_{len(st.session_state.chat_history)}')
+else:
+    user_prompt = st.chat_input("Type your question here...")
+
+if user_prompt and user_prompt.lower() != "undefined":
+    st.session_state.chat_history.append({"user": user_prompt})
+    # Get the AI response
+    with st.spinner("Thinking..."):
+        history_for_logic = st.session_state.chat_history[:-1]
+        answer, pdf_filename = handle_query_logic(user_prompt, history_for_logic, st.session_state.get("session_id"))
+        full_answer_html = f"{answer}<br><span class='note-text'>{disclaimer_text}</span>"
+        st.session_state.chat_history.append({"bot": full_answer_html, "pdf_filename": pdf_filename})
+
+# 2. Display the entire chat history
 for entry in st.session_state.chat_history:
     role = "user" if "user" in entry else "bot"
     with st.chat_message(role):
@@ -262,51 +276,14 @@ for entry in st.session_state.chat_history:
                 with open(pdf_path, "rb") as pdf_file:
                     st.download_button("📥 Download Cheatsheet", pdf_file.read(), entry["pdf_filename"], "application/pdf", key=f"dl_{entry['pdf_filename']}_{uuid.uuid4()}")
 
-# 2. Check if we need to generate a bot response
-if st.session_state.chat_history and "user" in st.session_state.chat_history[-1] and not st.session_state.processing:
-    st.session_state.processing = True
-    user_prompt = st.session_state.chat_history[-1]["user"]
-    
-    with st.chat_message("bot"):
-        with st.spinner("Thinking..."):
-            # Pass all history *except* the current user prompt
-            history_for_logic = st.session_state.chat_history[:-1]
-            answer, pdf_filename = handle_query_logic(user_prompt, history_for_logic, st.session_state.get("session_id"))
-
-            # Clean text for TTS
-            clean_text = re.sub(r'<.*?>', '', answer) 
-            raw_answer_text = clean_text.replace('`', '').replace('*', '')
-            full_answer_html = f"{answer}<br><span class='note-text'>{disclaimer_text}</span>"
-            
-            # Display response and download button
-            st.markdown(full_answer_html, unsafe_allow_html=True)
-            if pdf_filename:
-                pdf_path = os.path.join(CHEATSHEET_PATH, pdf_filename)
-                if os.path.exists(pdf_path):
-                    with open(pdf_path, "rb") as pdf_file:
-                        st.download_button("📥 Download Cheatsheet", pdf_file.read(), pdf_filename, "application/pdf", key=f"dl_latest_{pdf_filename}")
-
-            # Store the new bot message
-            st.session_state.chat_history.append({"bot": full_answer_html, "pdf_filename": pdf_filename})
-
-            # Play audio if enabled
-            if st.session_state.voice_enabled:
-                spoken_text = raw_answer_text + " Is there anything else I can help with?"
-                text_to_audio_autoplay(spoken_text, st.session_state.output_accent)
-    
-    st.session_state.processing = False
-    st.rerun()
-
-# 3. Display the input widgets at the bottom
-user_prompt = None
-if st.session_state.voice_enabled:
-    user_prompt = speech_to_text(language=st.session_state.input_accent, use_container_width=True, just_once=True, key=f'STT_{len(st.session_state.chat_history)}')
-else:
-    user_prompt = st.chat_input("Type your question here...")
-
-if user_prompt and user_prompt.lower() != "undefined":
-    st.session_state.chat_history.append({"user": user_prompt})
-    st.rerun()
+# 3. Play audio for the last bot message if needed
+if st.session_state.chat_history and "bot" in st.session_state.chat_history[-1]:
+    if user_prompt and st.session_state.voice_enabled: # Only play audio for the newest response
+        answer = st.session_state.chat_history[-1]['bot']
+        clean_text = re.sub(r'<.*?>', '', answer) 
+        raw_answer_text = clean_text.replace('`', '').replace('*', '')
+        spoken_text = raw_answer_text + " Is there anything else I can help with?"
+        text_to_audio_autoplay(spoken_text, st.session_state.output_accent)
 
 # 4. Display the document uploader at the very end
 st.divider()
