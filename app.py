@@ -14,8 +14,11 @@ from langchain.prompts import PromptTemplate
 from langchain import hub
 from langchain.tools import StructuredTool
 from streamlit_mic_recorder import speech_to_text
-from gtts import gTTS
 from langchain.memory import ConversationBufferMemory
+
+# --- NEW: Import Google Cloud Text-to-Speech ---
+from google.cloud import texttospeech
+from google.api_core import exceptions
 
 # --- 1. Configuration ---
 GOOGLE_API_KEY = st.secrets.get("GOOGLE_API_KEY", "YOUR_DEFAULT_API_KEY_HERE")
@@ -32,27 +35,45 @@ disclaimer_text = "— Note: This output is for academic purposes only and must 
 embeddings = GoogleGenerativeAIEmbeddings(model="models/embedding-001", google_api_key=GOOGLE_API_KEY)
 llm = ChatGoogleGenerativeAI(model="gemini-1.5-flash-latest", temperature=0.3, google_api_key=GOOGLE_API_KEY)
 
-# --- Text-to-Speech Function (with delay for stable playback) ---
-def text_to_audio_autoplay(text: str, tld: str):
+# --- NEW: Human-like Text-to-Speech Function ---
+def text_to_audio_autoplay(text: str, voice_name: str, language_code: str):
     try:
-        tts = gTTS(text=text, lang='en', tld=tld, slow=False)
+        client = texttospeech.TextToSpeechClient()
+        synthesis_input = texttospeech.SynthesisInput(text=text)
+        
+        voice = texttospeech.VoiceSelectionParams(
+            language_code=language_code,
+            name=voice_name
+        )
+        
+        audio_config = texttospeech.AudioConfig(
+            audio_encoding=texttospeech.AudioEncoding.MP3
+        )
+        
+        response = client.synthesize_speech(
+            input=synthesis_input, voice=voice, audio_config=audio_config
+        )
+        
         audio_filename = os.path.join(CHEATSHEET_PATH, f"response_{uuid.uuid4()}.mp3")
-        tts.save(audio_filename)
+        with open(audio_filename, "wb") as out:
+            out.write(response.audio_content)
 
         with open(audio_filename, "rb") as audio_file:
             audio_bytes = audio_file.read()
             st.audio(audio_bytes, format="audio/mp3", autoplay=True)
         
-        # This delay helps ensure the file is available for the browser
         time.sleep(1)
-        
         if os.path.exists(audio_filename):
             os.remove(audio_filename)
+
+    except exceptions.PermissionDenied:
+        st.error("Google Cloud authentication failed. Please check your service account credentials and ensure the Text-to-Speech API is enabled.")
     except Exception as e:
         st.warning(f"Could not generate audio response: {e}")
 
-# --- PDF Generation Class ---
+# --- PDF Generation (Unchanged) ---
 class PDF(FPDF):
+    # ... (rest of the class is unchanged)
     def __init__(self, topic, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self.topic = topic
@@ -67,8 +88,8 @@ class PDF(FPDF):
         self.set_text_color(128, 128, 128)
         self.cell(0, 10, f"Page {self.page_no()}/{{nb}}", 0, 0, 'C')
 
-# --- PDF Function ---
 def create_formatted_pdf(text_content: str, topic: str) -> str:
+    # ... (function is unchanged)
     pdf = PDF(topic)
     try:
         pdf.add_font("DejaVu", "", "DejaVuSans.ttf", uni=True)
@@ -120,8 +141,10 @@ def create_formatted_pdf(text_content: str, topic: str) -> str:
     pdf.output(filepath)
     return filename
 
-# --- Main Query Logic ---
+
+# --- Main Query Logic (Unchanged) ---
 def handle_query_logic(query: str, session_id: str = None):
+    # ... (function is unchanged)
     if session_id:
         temp_db_path = os.path.join(TEMP_STORAGE_PATH, session_id)
         if not os.path.exists(temp_db_path): return "Error: Your document session has expired.", None
@@ -192,6 +215,7 @@ def handle_query_logic(query: str, session_id: str = None):
                 except IndexError: pass
     return final_answer, pdf_filename
 
+
 # --- Streamlit UI ---
 st.set_page_config(layout="centered")
 
@@ -205,7 +229,8 @@ if "session_id" not in st.session_state: st.session_state.session_id = None
 if "active_doc_name" not in st.session_state: st.session_state.active_doc_name = None
 if "voice_enabled" not in st.session_state: st.session_state.voice_enabled = False
 if "input_accent" not in st.session_state: st.session_state.input_accent = 'en-US'
-if "output_accent" not in st.session_state: st.session_state.output_accent = 'com'
+# --- NEW: Session state for high-quality voice ---
+if "output_voice" not in st.session_state: st.session_state.output_voice = 'en-US-Standard-D'
 
 THEME = DARK if st.session_state.theme == "dark" else LIGHT
 
@@ -224,14 +249,21 @@ with st.sidebar:
 
     if st.session_state.voice_enabled:
         input_accent_options = {'American (US)': 'en-US', 'British (UK)': 'en-GB', 'Indian': 'en-IN'}
-        selected_input_label = st.selectbox("Your Accent (for input)", options=list(input_accent_options.keys()), index=list(input_accent_options.values()).index(st.session_state.input_accent))
+        selected_input_label = st.selectbox("Your Speaking Accent", options=list(input_accent_options.keys()))
         st.session_state.input_accent = input_accent_options[selected_input_label]
         
-        output_accent_options = {'American (US)': 'com', 'British (UK)': 'co.uk', 'Indian': 'co.in'}
-        selected_output_label = st.selectbox("Assistant's Accent (for output)", options=list(output_accent_options.keys()), index=list(output_accent_options.values()).index(st.session_state.output_accent))
-        st.session_state.output_accent = output_accent_options[selected_output_label]
+        # --- NEW: Dropdown for high-quality voices ---
+        output_voice_options = {
+            'US Male': 'en-US-Standard-D', 
+            'UK Female': 'en-GB-Standard-A',
+            'UK Male': 'en-GB-Standard-B',
+            'Australian Female': 'en-AU-Standard-C'
+        }
+        selected_output_label = st.selectbox("Assistant's Voice", options=list(output_voice_options.keys()))
+        st.session_state.output_voice = output_voice_options[selected_output_label]
 
-# --- UI Styling ---
+
+# --- UI Styling and Chat History (Unchanged) ---
 st.markdown(f"""
 <style>
     .stApp {{ background: {THEME['bg']}; color: {THEME['text']}; }}
@@ -244,10 +276,7 @@ st.markdown(f"""
     @media only screen and (max-width: 768px) {{ .topbar-custom {{ font-size: 1.2rem; padding: 1em; text-align: center; }} .msg-user, .msg-bot {{ font-size: 0.95rem; max-width: 95%; }} }}
 </style>
 """, unsafe_allow_html=True)
-
 st.markdown("<div class='topbar-custom'>Ophthalmology AI Assistant</div>", unsafe_allow_html=True)
-
-# --- Chat History and Document Handling ---
 for entry in st.session_state.chat_history:
     if "user" in entry: st.markdown(f"<div class='msg-user'>{entry['user']}</div>", unsafe_allow_html=True)
     else:
@@ -257,8 +286,8 @@ for entry in st.session_state.chat_history:
             if os.path.exists(pdf_path):
                 with open(pdf_path, "rb") as pdf_file:
                     st.download_button("📥 Download Cheatsheet", pdf_file.read(), entry["pdf_filename"], "application/pdf", key=f"dl_{entry['pdf_filename']}_{uuid.uuid4()}")
-
 with st.expander("Upload a Custom Document"):
+    # ... (unchanged)
     uploaded_file = st.file_uploader("Upload a PDF", type="pdf")
     if uploaded_file and st.button("Process Document"):
         with st.spinner("Processing document..."):
@@ -276,14 +305,15 @@ with st.expander("Upload a Custom Document"):
             st.session_state.active_doc_name = uploaded_file.name
             st.session_state.chat_history.append({"bot": f"Ready for questions about **{uploaded_file.name}**.<br><span class='note-text'>{disclaimer_text}</span>"})
             st.rerun()
-
 if st.session_state.active_doc_name:
+    # ... (unchanged)
     st.info(f"Active Document: **{st.session_state['active_doc_name']}**")
     if st.button("Clear Document & Revert to Default"):
         st.session_state.session_id = None
         st.session_state.active_doc_name = None
         st.session_state.chat_history.append({"bot": f"Reverted to default knowledge base.<br><span class='note-text'>{disclaimer_text}</span>"})
         st.rerun()
+
 
 # --- Voice and Text Input ---
 user_prompt = None
@@ -299,26 +329,28 @@ if user_prompt:
     with st.spinner("Thinking..."):
         answer, pdf_filename = handle_query_logic(user_prompt, st.session_state.get("session_id"))
         
-        raw_answer_text = re.sub(r'<.*?>', '', answer) 
+        # Clean the text for TTS by removing markdown and HTML
+        clean_text = re.sub(r'<.*?>', '', answer) 
+        raw_answer_text = clean_text.replace('`', '').replace('*', '')
+
         full_answer_html = f"{answer}<br><span class='note-text'>{disclaimer_text}</span>"
         
-        # Display the response first
         st.markdown(f"<div class='msg-bot'>{full_answer_html}</div>", unsafe_allow_html=True)
 
-        # Handle audio playback
         if st.session_state.voice_enabled:
-            text_to_audio_autoplay(raw_answer_text, st.session_state.output_accent)
+            # --- NEW: Add the follow-up phrase for voice mode ---
+            spoken_text = raw_answer_text + " Is there anything else I can help with?"
+            language_code = st.session_state.output_voice.split('-')[0] + '-' + st.session_state.output_voice.split('-')[1]
+            text_to_audio_autoplay(spoken_text, st.session_state.output_voice, language_code)
 
-        # Handle PDF download button
         if pdf_filename:
+            # ... (unchanged)
             pdf_path = os.path.join(CHEATSHEET_PATH, pdf_filename)
             if os.path.exists(pdf_path):
                 with open(pdf_path, "rb") as pdf_file:
                     st.download_button("📥 Download Cheatsheet", pdf_file.read(), pdf_filename, "application/pdf", key=f"dl_{pdf_filename}_{uuid.uuid4()}")
 
-        # Update chat history
+
         st.session_state.chat_history.append({"bot": full_answer_html, "pdf_filename": pdf_filename})
         
-        # --- FIX: REMOVED the automatic rerun for voice mode ---
-        # The script will now wait here, allowing audio to play fully.
-        # The user can click the microphone button again to initiate a new query.
+        # No st.rerun() here to allow audio to play fully
