@@ -52,119 +52,42 @@ def text_to_audio_b64(text: str, tld: str) -> str | None:
         return None
 
 def render_audio_player_b64(audio_b64: str):
-    # Mobile-safe autoplay with: previous-audio cleanup, muted->unmute trick,
-    # and a tiny fallback button if autoplay is still blocked.
+    # Mobile-safe autoplay with fallback on first user gesture (iOS/Android)
     audio_id = f"audio_{uuid.uuid4().hex}"
-    btn_id = f"btn_{uuid.uuid4().hex}"
-    html = f"""
-    <style>
-      /* Tiny fallback button (shown only if needed) */
-      #{btn_id} {{
-        position: fixed; bottom: 14px; right: 14px; z-index: 9999;
-        padding: 10px 14px; border-radius: 9999px; border: 0;
-        font-weight: 600; box-shadow: 0 2px 10px rgba(0,0,0,.2);
-        display: none;
-      }}
-      @media (max-width: 820px) {{
-        /* Mobile: button will appear if autoplay fails */
-        #{btn_id} {{ display: none; }}
-      }}
-    </style>
-
-    <audio id="{audio_id}" autoplay playsinline preload="auto" muted
+    audio_html = f"""
+    <audio id="{audio_id}" autoplay playsinline preload="auto"
            style="width:0;height:0;visibility:hidden;" controlslist="nodownload noplaybackrate"
            src="data:audio/mpeg;base64,{audio_b64}">
       <source src="data:audio/mpeg;base64,{audio_b64}" type="audio/mpeg">
     </audio>
-
-    <button id="{btn_id}" aria-label="Play voice">🔊 Tap to play</button>
-
     <script>
       (function() {{
-        const id = "{audio_id}";
-        const btnId = "{btn_id}";
-        const a = document.getElementById(id);
-        const btn = document.getElementById(btnId);
-
-        // 1) Pause/cleanup any other audio elements we previously injected
-        document.querySelectorAll('audio[id^="audio_"]').forEach(el => {{
-          if (el !== a) {{ try {{ el.pause(); }} catch(e) {{}} }}
-        }});
-
-        // Ensure volume is up
-        a.volume = 1.0;
-
-        // Helper: show fallback button (mobile only)
-        function showBtn() {{
-          // Only show on small screens
-          if (window.matchMedia && window.matchMedia("(max-width: 820px)").matches) {{
-            btn.style.display = 'inline-block';
+        const a = document.getElementById("{audio_id}");
+        if (!a) return;
+        function tryPlay() {{
+          const p = a.play();
+          if (p && typeof p.then === "function") {{
+            p.catch(() => {{
+              // If autoplay is blocked, unlock on the next user gesture
+              const unlock = () => {{
+                a.play().catch(() => {{ /* ignore */ }});
+                document.removeEventListener('touchstart', unlock, true);
+                document.removeEventListener('click', unlock, true);
+              }};
+              document.addEventListener('touchstart', unlock, true);
+              document.addEventListener('click', unlock, true);
+            }});
           }}
         }}
-
-        // Try to play (muted) first — many browsers allow muted autoplay
-        function attemptPlay(unmuteAfter = true) {{
-          try {{
-            const p = a.play();
-            if (p && typeof p.then === "function") {{
-              p.then(() => {{
-                if (unmuteAfter) {{
-                  // Unmute shortly after playback starts
-                  setTimeout(() => {{
-                    try {{
-                      a.muted = false;
-                      a.volume = 1.0;
-                    }} catch(e) {{}}
-                  }}, 50);
-                }}
-              }}).catch(() => {{
-                // Autoplay blocked — wait for a user gesture
-                attachGestureUnlock();
-                showBtn();
-              }});
-            }}
-          }} catch(e) {{
-            attachGestureUnlock();
-            showBtn();
-          }}
-        }}
-
-        function attachGestureUnlock() {{
-          const unlock = () => {{
-            try {{
-              a.muted = false;
-              a.volume = 1.0;
-              a.currentTime = 0;
-              a.play().catch(() => {{ /* ignore */ }});
-            }} catch(e) {{}}
-            document.removeEventListener('touchstart', unlock, true);
-            document.removeEventListener('click', unlock, true);
-            if (btn) btn.style.display = 'none';
-          }};
-          document.addEventListener('touchstart', unlock, true);
-          document.addEventListener('click', unlock, true);
-          if (btn) {{
-            btn.addEventListener('click', (e) => {{
-              e.preventDefault();
-              unlock();
-            }}, {{ once: true }});
-          }}
-          // Also try again when page becomes visible (e.g., after app reruns)
-          document.addEventListener('visibilitychange', () => {{
-            if (!document.hidden) attemptPlay(false);
-          }}, {{ once: true }});
-        }}
-
-        // Kick off first attempt
         if (document.readyState === 'complete' || document.readyState === 'interactive') {{
-          attemptPlay(true);
+          tryPlay();
         }} else {{
-          document.addEventListener('DOMContentLoaded', () => attemptPlay(true), {{ once: true }});
+          document.addEventListener('DOMContentLoaded', tryPlay, {{ once: true }});
         }}
       }})();
     </script>
     """
-    st.markdown(html, unsafe_allow_html=True)
+    st.markdown(audio_html, unsafe_allow_html=True)
 
 # --- PDF Generation Class ---
 class PDF(FPDF):
@@ -205,7 +128,7 @@ def create_formatted_pdf(text_content: str, topic: str) -> str:
     line_height = 7
     pdf.set_text_color(50, 50, 50)
     for line in text_content.split('\n'):
-        line = line.strip()
+        line = strip = line.strip()
         if not line:
             continue
         if line.startswith('## '):
