@@ -170,4 +170,70 @@ if st.session_state.user_prompt_to_process:
     st.session_state.user_prompt_to_process = None
     st.session_state.chat_history.append({"user": prompt})
     
-    # Generate and append
+    # Generate and append the bot's response
+    history_for_logic = st.session_state.chat_history
+    answer, pdf_filename = get_bot_response(prompt, history_for_logic, st.session_state.get("session_id"))
+    full_answer_html = f"{answer}<br><span class='note-text'>{disclaimer_text}</span>"
+    bot_message = {"bot": full_answer_html, "pdf_filename": pdf_filename}
+
+    if st.session_state.voice_enabled:
+        clean_text = re.sub(r'<.*?>', '', answer).replace('`', '').replace('*', '')
+        spoken_text = clean_text + " Is there anything else I can help with?"
+        audio_b64 = text_to_audio_b64(spoken_text, st.session_state.output_accent)
+        if audio_b64:
+            bot_message['audio_b64'] = audio_b64
+            
+    st.session_state.chat_history.append(bot_message)
+    st.rerun()
+
+# 2. Display the chat history
+for message in st.session_state.chat_history:
+    role = "user" if "user" in message else "bot"
+    # --- FIX: Use a more human-like emoji for the assistant ---
+    avatar = "🧑‍⚕️" if role == "bot" else "👤"
+    with st.chat_message(role, avatar=avatar):
+        st.markdown(message[role], unsafe_allow_html=True)
+        if role == 'bot' and message.get('audio_b64'):
+            audio_html = f"""
+                <audio controls>
+                <source src="data:audio/mp3;base64,{message['audio_b64']}" type="audio/mp3">
+                </audio>
+                """
+            st.markdown(audio_html, unsafe_allow_html=True)
+        if role == 'bot' and message.get('pdf_filename'):
+            with open(os.path.join(CHEATSHEET_PATH, message['pdf_filename']), "rb") as f:
+                st.download_button("📥 Download Cheatsheet", f, message['pdf_filename'], "application/pdf")
+
+# 3. Show input controls at the bottom
+if st.session_state.voice_enabled:
+    user_prompt = speech_to_text(language=st.session_state.input_accent, use_container_width=True, just_once=True, key=f'STT_{len(st.session_state.chat_history)}')
+else:
+    user_prompt = st.chat_input("Type your question here...")
+
+if user_prompt and user_prompt.lower() != "undefined":
+    st.session_state.user_prompt_to_process = user_prompt
+    st.rerun()
+
+# 4. Document uploader at the bottom
+st.divider()
+with st.expander("Upload a Custom Document"):
+    uploaded_file = st.file_uploader("Upload a PDF", type="pdf")
+    if uploaded_file and st.button("Process Document"):
+        with st.spinner("Processing document..."):
+            session_id = str(uuid.uuid4())
+            temp_dir = os.path.join(TEMP_STORAGE_PATH, session_id); os.makedirs(temp_dir, exist_ok=True)
+            file_path = os.path.join(temp_dir, uploaded_file.name)
+            with open(file_path, "wb") as f: f.write(uploaded_file.getbuffer())
+            doc = fitz.open(file_path)
+            texts = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=100).split_text("".join(page.get_text() for page in doc))
+            FAISS.from_texts(texts, embeddings).save_local(temp_dir)
+            st.session_state.session_id = session_id
+            st.session_state.active_doc_name = uploaded_file.name
+            st.session_state.chat_history = [{"bot": f"Ready for questions about **{uploaded_file.name}**."}]
+            st.rerun()
+
+if st.session_state.active_doc_name:
+    st.info(f"Active Document: **{st.session_state['active_doc_name']}**")
+    if st.button("Clear Document & Revert to Default"):
+        st.session_state.session_id = None; st.session_state.active_doc_name = None
+        st.session_state.chat_history.append({"bot": "Reverted to default knowledge base."}); st.rerun()
