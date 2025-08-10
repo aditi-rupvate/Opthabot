@@ -45,7 +45,7 @@ class PDF(FPDF):
         self.set_text_color(128, 128, 128)
         self.cell(0, 10, f"Page {self.page_no()}/{{nb}}", 0, 0, 'C')
 
-# --- PDF Function (with fonts loaded first and small grey disclaimer) ---
+# --- PDF Function ---
 def create_formatted_pdf(text_content: str, topic: str) -> str:
     pdf = PDF(topic)
     try:
@@ -92,7 +92,7 @@ def create_formatted_pdf(text_content: str, topic: str) -> str:
             pdf.multi_cell(0, line_height, line)
             pdf.ln(3)
 
-    # Disclaimer (small, grey)
+    # Disclaimer
     pdf.ln(5)
     pdf.set_draw_color(200, 200, 200)
     x = pdf.get_x()
@@ -109,7 +109,7 @@ def create_formatted_pdf(text_content: str, topic: str) -> str:
     pdf.output(filepath)
     return filename
 
-# --- Main Query Logic ---
+# --- Main Query Logic (with improved tool descriptions) ---
 def handle_query_logic(query: str, session_id: str = None):
     if session_id:
         temp_db_path = os.path.join(TEMP_STORAGE_PATH, session_id)
@@ -123,23 +123,24 @@ def handle_query_logic(query: str, session_id: str = None):
 
     retriever = db.as_retriever(search_type="similarity", search_kwargs={"k": 5})
 
+    # --- Tool descriptions have been updated for better agent decisions ---
     @tool
     def question_answer_tool(query: str) -> str:
-        """Use for direct questions."""
+        """Use this tool to answer a direct, specific question from the user about the document."""
         chain = RetrievalQA.from_chain_type(llm=llm, chain_type="stuff", retriever=retriever)
         return chain.invoke(query)['result']
 
     @tool
     def concept_explainer_tool(topic: str) -> str:
-        """Use for detailed topic explanations."""
+        """Use this tool when the user asks for a summary, an explanation, or to be taught about a topic. This tool provides the answer directly in the chat."""
         context = "\n\n".join([doc.page_content for doc in retriever.get_relevant_documents(topic)])
-        prompt = PromptTemplate.from_template("Provide a comprehensive explanation of {topic}.\n\nContext: {context}\nLecture:")
+        prompt = PromptTemplate.from_template("Provide a comprehensive explanation or summary for {topic}.\n\nContext: {context}\nResponse:")
         chain = LLMChain(llm=llm, prompt=prompt)
         return chain.run(topic=topic, context=context)
 
     @tool
     def cheatsheet_generator_tool(topic: str) -> str:
-        """Use for cheat sheets or summaries. Generates a PDF."""
+        """Use this tool ONLY when the user EXPLICITLY asks for a downloadable PDF, a file, or a 'cheat sheet'. This tool's main purpose is to create a downloadable file."""
         context = "\n\n".join([doc.page_content for doc in retriever.get_relevant_documents(topic)])
         prompt = PromptTemplate.from_template(
             "Create a detailed cheat sheet for {topic} using '##' for headings and '-' for list items.\nContext: {context}\nCheat Sheet:"
