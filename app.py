@@ -223,8 +223,24 @@ with st.sidebar:
     st.session_state.voice_enabled = st.toggle("Enable Voice Chat", value=st.session_state.voice_enabled, help="Enable voice input and spoken responses.")
 
     if st.session_state.voice_enabled:
-        input_accent_options = {'American (US)': 'en-US', 'British (UK)': 'en-GB', 'Indian': 'en-IN'}
-        selected_input_label = st.selectbox("Your Accent (for input)", options=list(input_accent_options.keys()), index=list(input_accent_options.values()).index(st.session_state.input_accent))
+        # --- FIX: Added more input accents ---
+        input_accent_options = {
+            'American (US)': 'en-US', 
+            'British (UK)': 'en-GB', 
+            'Indian': 'en-IN',
+            'Australian': 'en-AU',
+            'Canadian': 'en-CA',
+            'South African': 'en-ZA'
+        }
+        
+        # To prevent errors if the saved accent is no longer in the list, we find its index safely
+        current_accent_index = 0
+        try:
+            current_accent_index = list(input_accent_options.values()).index(st.session_state.input_accent)
+        except ValueError:
+            pass # Default to index 0 if not found
+
+        selected_input_label = st.selectbox("Your Accent (for input)", options=list(input_accent_options.keys()), index=current_accent_index)
         st.session_state.input_accent = input_accent_options[selected_input_label]
         
         output_accent_options = {'American (US)': 'com', 'British (UK)': 'co.uk', 'Indian': 'co.in'}
