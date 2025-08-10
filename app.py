@@ -16,7 +16,6 @@ from langchain.tools import StructuredTool
 from streamlit_mic_recorder import speech_to_text
 from gtts import gTTS
 from langchain.memory import ConversationBufferMemory
-from mutagen.mp3 import MP3
 
 # --- 1. Configuration ---
 GOOGLE_API_KEY = st.secrets.get("GOOGLE_API_KEY", "YOUR_DEFAULT_API_KEY_HERE")
@@ -33,30 +32,25 @@ disclaimer_text = "— Note: This output is for academic purposes only and must 
 embeddings = GoogleGenerativeAIEmbeddings(model="models/embedding-001", google_api_key=GOOGLE_API_KEY)
 llm = ChatGoogleGenerativeAI(model="gemini-1.5-flash-latest", temperature=0.3, google_api_key=GOOGLE_API_KEY)
 
-# --- Text-to-Speech Function (Calculates audio duration) ---
-def text_to_audio_autoplay(text: str, tld: str) -> float:
-    audio_duration = 0
+# --- Text-to-Speech Function (Stable, Non-blocking) ---
+def text_to_audio_autoplay(text: str, tld: str):
     try:
         tts = gTTS(text=text, lang='en', tld=tld, slow=False)
         audio_filename = os.path.join(CHEATSHEET_PATH, f"response_{uuid.uuid4()}.mp3")
         tts.save(audio_filename)
 
-        # Calculate audio duration using mutagen
-        audio = MP3(audio_filename)
-        audio_duration = audio.info.length
-
         with open(audio_filename, "rb") as audio_file:
             audio_bytes = audio_file.read()
+            # This sends the audio to the browser to be played.
+            # The script does not wait for it to finish.
             st.audio(audio_bytes, format="audio/mp3", autoplay=True)
         
-        # Clean up immediately, as the bytes are sent
+        # Clean up the file after sending it to the browser
         if os.path.exists(audio_filename):
             os.remove(audio_filename)
             
     except Exception as e:
         st.warning(f"Could not generate audio response: {e}")
-        
-    return audio_duration
 
 # --- PDF Generation Class ---
 class PDF(FPDF):
@@ -171,7 +165,8 @@ def handle_query_logic(query: str, session_id: str = None):
     
     memory = ConversationBufferMemory(memory_key="chat_history", return_messages=True)
     
-    for msg in st.session_state.chat_history:
+    # Use all but the last message for history, as the last one is the current query
+    for msg in st.session_state.chat_history[:-1]:
         if "user" in msg:
             memory.chat_memory.add_user_message(msg["user"])
         else:
@@ -254,9 +249,31 @@ st.markdown(f"""
 
 st.markdown("<div class='topbar-custom'>Ophthalmology AI Assistant</div>", unsafe_allow_html=True)
 
+# --- Handle New Prompt ---
+def handle_new_prompt(prompt):
+    st.session_state.chat_history.append({"user": prompt})
+    
+    with st.spinner("Thinking..."):
+        answer, pdf_filename = handle_query_logic(prompt, st.session_state.get("session_id"))
+        
+        # Clean the text for TTS
+        clean_text = re.sub(r'<.*?>', '', answer) 
+        raw_answer_text = clean_text.replace('`', '').replace('*', '')
+
+        full_answer_html = f"{answer}<br><span class='note-text'>{disclaimer_text}</span>"
+        
+        st.session_state.chat_history.append({"bot": full_answer_html, "pdf_filename": pdf_filename})
+
+        if st.session_state.voice_enabled:
+            spoken_text = raw_answer_text + " Is there anything else I can help you with?"
+            text_to_audio_autoplay(spoken_text, st.session_state.output_accent)
+    
+    st.rerun()
+
 # --- Chat History Display ---
 for entry in st.session_state.chat_history:
-    if "user" in entry: st.markdown(f"<div class='msg-user'>{entry['user']}</div>", unsafe_allow_html=True)
+    if "user" in entry:
+        st.markdown(f"<div class='msg-user'>{entry['user']}</div>", unsafe_allow_html=True)
     else:
         st.markdown(f"<div class='msg-bot'>{entry['bot']}</div>", unsafe_allow_html=True)
         if entry.get("pdf_filename"):
@@ -265,47 +282,17 @@ for entry in st.session_state.chat_history:
                 with open(pdf_path, "rb") as pdf_file:
                     st.download_button("📥 Download Cheatsheet", pdf_file.read(), entry["pdf_filename"], "application/pdf", key=f"dl_{entry['pdf_filename']}_{uuid.uuid4()}")
 
-# --- Voice and Text Input ---
+# --- Input Handling ---
 user_prompt = None
 if st.session_state.voice_enabled:
-    user_prompt = speech_to_text(language=st.session_state.input_accent, use_container_width=True, just_once=True, key='STT')
+    user_prompt = speech_to_text(language=st.session_state.input_accent, use_container_width=True, just_once=True, key=f'STT_{len(st.session_state.chat_history)}')
 else:
     user_prompt = st.chat_input("Type your question here...")
 
-# --- Main Processing Loop ---
 if user_prompt and user_prompt.lower() != "undefined":
-    st.markdown(f"<div class='msg-user'>{user_prompt}</div>", unsafe_allow_html=True)
-    st.session_state.chat_history.append({"user": user_prompt})
+    handle_new_prompt(user_prompt)
 
-    with st.spinner("Thinking..."):
-        answer, pdf_filename = handle_query_logic(user_prompt, st.session_state.get("session_id"))
-        
-        clean_text = re.sub(r'<.*?>', '', answer) 
-        raw_answer_text = clean_text.replace('`', '').replace('*', '')
-
-        full_answer_html = f"{answer}<br><span class='note-text'>{disclaimer_text}</span>"
-        
-        st.markdown(f"<div class='msg-bot'>{full_answer_html}</div>", unsafe_allow_html=True)
-
-        audio_duration = 0
-        if st.session_state.voice_enabled:
-            spoken_text = raw_answer_text + " Is there anything else I can help with?"
-            audio_duration = text_to_audio_autoplay(spoken_text, st.session_state.output_accent)
-
-        if pdf_filename:
-            pdf_path = os.path.join(CHEATSHEET_PATH, pdf_filename)
-            if os.path.exists(pdf_path):
-                with open(pdf_path, "rb") as pdf_file:
-                    st.download_button("📥 Download Cheatsheet", pdf_file.read(), pdf_filename, "application/pdf", key=f"dl_{pdf_filename}_{uuid.uuid4()}")
-
-        st.session_state.chat_history.append({"bot": full_answer_html, "pdf_filename": pdf_filename})
-        
-        # --- FIX: Wait for audio to finish, then rerun to reset the mic ---
-        if st.session_state.voice_enabled and audio_duration > 0:
-            time.sleep(audio_duration + 0.5) # Wait for audio to finish playing
-            st.rerun()
-
-# --- NEW: Document Upload Section Moved to the Bottom ---
+# --- Document Upload Section at the Bottom ---
 st.divider()
 with st.expander("Upload a Custom Document"):
     uploaded_file = st.file_uploader("Upload a PDF", type="pdf", key="pdf_uploader")
@@ -323,6 +310,7 @@ with st.expander("Upload a Custom Document"):
             FAISS.from_texts(texts, embeddings).save_local(temp_dir)
             st.session_state.session_id = session_id
             st.session_state.active_doc_name = uploaded_file.name
+            # Clear previous chat history when a new doc is uploaded
             st.session_state.chat_history = [{"bot": f"Ready for questions about **{uploaded_file.name}**.<br><span class='note-text'>{disclaimer_text}</span>"}]
             st.rerun()
 
