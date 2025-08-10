@@ -52,11 +52,40 @@ def text_to_audio_b64(text: str, tld: str) -> str | None:
         return None
 
 def render_audio_player_b64(audio_b64: str):
-    # This will now autoplay successfully on mobile after the initial "Start Session" tap
+    # Mobile-safe autoplay with fallback on first user gesture (iOS/Android)
+    audio_id = f"audio_{uuid.uuid4().hex}"
     audio_html = f"""
-    <audio autoplay style="display:none;">
-      <source src="data:audio/mp3;base64,{audio_b64}" type="audio/mp3">
+    <audio id="{audio_id}" autoplay playsinline preload="auto"
+           style="width:0;height:0;visibility:hidden;" controlslist="nodownload noplaybackrate"
+           src="data:audio/mpeg;base64,{audio_b64}">
+      <source src="data:audio/mpeg;base64,{audio_b64}" type="audio/mpeg">
     </audio>
+    <script>
+      (function() {{
+        const a = document.getElementById("{audio_id}");
+        if (!a) return;
+        function tryPlay() {{
+          const p = a.play();
+          if (p && typeof p.then === "function") {{
+            p.catch(() => {{
+              // If autoplay is blocked, unlock on the next user gesture
+              const unlock = () => {{
+                a.play().catch(() => {{ /* ignore */ }});
+                document.removeEventListener('touchstart', unlock, true);
+                document.removeEventListener('click', unlock, true);
+              }};
+              document.addEventListener('touchstart', unlock, true);
+              document.addEventListener('click', unlock, true);
+            }});
+          }}
+        }}
+        if (document.readyState === 'complete' || document.readyState === 'interactive') {{
+          tryPlay();
+        }} else {{
+          document.addEventListener('DOMContentLoaded', tryPlay, {{ once: true }});
+        }}
+      }})();
+    </script>
     """
     st.markdown(audio_html, unsafe_allow_html=True)
 
@@ -99,7 +128,7 @@ def create_formatted_pdf(text_content: str, topic: str) -> str:
     line_height = 7
     pdf.set_text_color(50, 50, 50)
     for line in text_content.split('\n'):
-        line = line.strip()
+        line = strip = line.strip()
         if not line:
             continue
         if line.startswith('## '):
