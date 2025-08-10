@@ -20,14 +20,14 @@ CHEATSHEET_PATH = "downloads"
 os.makedirs(TEMP_STORAGE_PATH, exist_ok=True)
 os.makedirs(CHEATSHEET_PATH, exist_ok=True)
 
-# --- DISCLAIMER (added) ---
-disclaimer_text = "\n\n— Note: This output is for academic purposes only and must not be used for clinical diagnosis."
+# --- DISCLAIMER (for UI and PDF) ---
+disclaimer_text = "— Note: This output is for academic purposes only and must not be used for clinical diagnosis."
 
 # --- Backend Components ---
 embeddings = GoogleGenerativeAIEmbeddings(model="models/embedding-001", google_api_key=GOOGLE_API_KEY)
 llm = ChatGoogleGenerativeAI(model="gemini-1.5-flash-latest", temperature=0.3, google_api_key=GOOGLE_API_KEY)
 
-# --- PDF Generation Class (Unchanged) ---
+# --- PDF Generation Class ---
 class PDF(FPDF):
     def __init__(self, topic, *args, **kwargs):
         super().__init__(*args, **kwargs)
@@ -45,11 +45,9 @@ class PDF(FPDF):
         self.set_text_color(128, 128, 128)
         self.cell(0, 10, f"Page {self.page_no()}/{{nb}}", 0, 0, 'C')
 
-# --- CORRECTED PDF Function (with disclaimer appended) ---
+# --- PDF Function (with fonts loaded first and small grey disclaimer) ---
 def create_formatted_pdf(text_content: str, topic: str) -> str:
     pdf = PDF(topic)
-
-    # Load fonts BEFORE creating the first page
     try:
         pdf.add_font("DejaVu", "", "DejaVuSans.ttf", uni=True)
         pdf.add_font("DejaVu", "B", "DejaVuSans-Bold.ttf", uni=True)
@@ -62,7 +60,7 @@ def create_formatted_pdf(text_content: str, topic: str) -> str:
     pdf.set_margins(15, 15, 15)
     pdf.set_auto_page_break(auto=True, margin=20)
 
-    # Main Title
+    # Title
     pdf.set_font("DejaVu", "B", 20)
     pdf.set_text_color(40, 40, 40)
     pdf.cell(0, 10, f"Cheatsheet: {topic.title()}", 0, 1, 'C')
@@ -94,13 +92,13 @@ def create_formatted_pdf(text_content: str, topic: str) -> str:
             pdf.multi_cell(0, line_height, line)
             pdf.ln(3)
 
-    # Append disclaimer at the end of the PDF (added)
+    # Disclaimer (small, grey)
     pdf.ln(5)
     pdf.set_draw_color(200, 200, 200)
     x = pdf.get_x()
     pdf.line(x, pdf.get_y(), x + 180, pdf.get_y())
     pdf.ln(4)
-    pdf.set_font("DejaVu", "", 9)
+    pdf.set_font("DejaVu", "", 8)
     pdf.set_text_color(120, 120, 120)
     pdf.multi_cell(0, 6, "Note: This content is for academic purposes only and must not be used for clinical diagnosis.")
 
@@ -111,7 +109,7 @@ def create_formatted_pdf(text_content: str, topic: str) -> str:
     pdf.output(filepath)
     return filename
 
-# --- Main Query Logic (Unchanged) ---
+# --- Main Query Logic ---
 def handle_query_logic(query: str, session_id: str = None):
     if session_id:
         temp_db_path = os.path.join(TEMP_STORAGE_PATH, session_id)
@@ -143,7 +141,9 @@ def handle_query_logic(query: str, session_id: str = None):
     def cheatsheet_generator_tool(topic: str) -> str:
         """Use for cheat sheets or summaries. Generates a PDF."""
         context = "\n\n".join([doc.page_content for doc in retriever.get_relevant_documents(topic)])
-        prompt = PromptTemplate.from_template("Create a detailed cheat sheet for {topic} using '##' for headings and '-' for list items.\nContext: {context}\nCheat Sheet:")
+        prompt = PromptTemplate.from_template(
+            "Create a detailed cheat sheet for {topic} using '##' for headings and '-' for list items.\nContext: {context}\nCheat Sheet:"
+        )
         chain = LLMChain(llm=llm, prompt=prompt)
         cheatsheet_text = chain.run(topic=topic, context=context)
         pdf_filename = create_formatted_pdf(cheatsheet_text, topic)
@@ -175,8 +175,9 @@ def handle_query_logic(query: str, session_id: str = None):
 
     return final_answer, pdf_filename
 
-# --- Streamlit UI (Unchanged) ---
+# --- Streamlit UI ---
 st.set_page_config(layout="centered")
+
 LIGHT = {
     "bg": "#f8fafb", "bar": "#fff", "bot": "#e9eef6", "user": "#d1e7dd",
     "text": "#191b22", "input": "#e8edf2", "border": "#d4dde7", "expander": "#f4f7fb"
@@ -185,6 +186,7 @@ DARK = {
     "bg": "#18181c", "bar": "#202126", "bot": "#232733", "user": "#22577a",
     "text": "#f3f5f8", "input": "#242730", "border": "#26282f", "expander": "#24272e"
 }
+
 if "theme" not in st.session_state:
     st.session_state["theme"] = "dark"
 if "chat_history" not in st.session_state:
@@ -193,6 +195,7 @@ if "session_id" not in st.session_state:
     st.session_state["session_id"] = None
 if "active_doc_name" not in st.session_state:
     st.session_state["active_doc_name"] = None
+
 THEME = DARK if st.session_state["theme"] == "dark" else LIGHT
 
 # --- Responsive UI Styling ---
@@ -254,7 +257,11 @@ st.markdown(f"""
         border: 1px solid {THEME['border']};
     }}
 
-    /* Mobile Responsive Design */
+    .note-text {{
+        color: #787878;
+        font-size: 0.9rem;
+    }}
+
     @media only screen and (max-width: 768px) {{
         .topbar-custom {{
             font-size: 1.2rem;
@@ -265,17 +272,11 @@ st.markdown(f"""
             font-size: 0.95rem;
             max-width: 95%;
         }}
-        .mobile-only {{ display: block !important; }}
-        .desktop-only {{ display: none !important; }}
-    }}
-
-    @media only screen and (min-width: 769px) {{
-        .mobile-only {{ display: none !important; }}
-        .desktop-only {{ display: block !important; }}
     }}
 </style>
 """, unsafe_allow_html=True)
 
+# --- Top Bar Layout ---
 col1, col2, col3 = st.columns([8, 1, 1])
 with col1:
     st.markdown("<div class='topbar-custom'>Ophthalmology AI Assistant</div>", unsafe_allow_html=True)
@@ -326,8 +327,9 @@ with st.expander("Upload a Custom Document"):
             temp_db.save_local(temp_dir)
             st.session_state["session_id"] = session_id
             st.session_state["active_doc_name"] = uploaded_file.name
-            # Include disclaimer in the bot's status message as well (added)
-            st.session_state.chat_history.append({"bot": f"Ready for questions about **{uploaded_file.name}**.{disclaimer_text}"})
+            st.session_state.chat_history.append({
+                "bot": f"Ready for questions about **{uploaded_file.name}**.<br><span class='note-text'>{disclaimer_text}</span>"
+            })
             st.rerun()
 
 # --- Active Document Status ---
@@ -336,23 +338,22 @@ if st.session_state["active_doc_name"]:
     if st.button("Clear Document & Revert to Default"):
         st.session_state["session_id"] = None
         st.session_state["active_doc_name"] = None
-        st.session_state.chat_history.append({"bot": f"Reverted to default knowledge base.{disclaimer_text}"})
+        st.session_state.chat_history.append({
+            "bot": f"Reverted to default knowledge base.<br><span class='note-text'>{disclaimer_text}</span>"
+        })
         st.rerun()
 
-# --- User Input & Logic (shows user, then spinner, then assistant with disclaimer) ---
+# --- User Input & Logic ---
 if user_prompt := st.chat_input("Type your question here..."):
-    # Show user's message immediately
     st.markdown(f"<div class='msg-user'>{user_prompt}</div>", unsafe_allow_html=True)
     st.session_state.chat_history.append({"user": user_prompt})
 
     with st.spinner("Thinking..."):
         answer, pdf_filename = handle_query_logic(user_prompt, st.session_state.get("session_id"))
-        full_answer = f"{answer}{disclaimer_text}"  # append disclaimer
+        full_answer = f"{answer}<br><span class='note-text'>{disclaimer_text}</span>"
 
-        # Show assistant message with disclaimer
         st.markdown(f"<div class='msg-bot'>{full_answer}</div>", unsafe_allow_html=True)
 
-        # Download button if PDF exists
         if pdf_filename:
             pdf_path = os.path.join(CHEATSHEET_PATH, pdf_filename)
             if os.path.exists(pdf_path):
@@ -365,5 +366,4 @@ if user_prompt := st.chat_input("Type your question here..."):
                         key=f"dl_{pdf_filename}_{uuid.uuid4()}"
                     )
 
-        # Save to chat history (with disclaimer)
         st.session_state.chat_history.append({"bot": full_answer, "pdf_filename": pdf_filename})
