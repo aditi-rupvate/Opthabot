@@ -20,6 +20,9 @@ CHEATSHEET_PATH = "downloads"
 os.makedirs(TEMP_STORAGE_PATH, exist_ok=True)
 os.makedirs(CHEATSHEET_PATH, exist_ok=True)
 
+# --- DISCLAIMER (added) ---
+disclaimer_text = "\n\n— Note: This output is for academic purposes only and must not be used for clinical diagnosis."
+
 # --- Backend Components ---
 embeddings = GoogleGenerativeAIEmbeddings(model="models/embedding-001", google_api_key=GOOGLE_API_KEY)
 llm = ChatGoogleGenerativeAI(model="gemini-1.5-flash-latest", temperature=0.3, google_api_key=GOOGLE_API_KEY)
@@ -42,11 +45,11 @@ class PDF(FPDF):
         self.set_text_color(128, 128, 128)
         self.cell(0, 10, f"Page {self.page_no()}/{{nb}}", 0, 0, 'C')
 
-# --- CORRECTED PDF Function ---
+# --- CORRECTED PDF Function (with disclaimer appended) ---
 def create_formatted_pdf(text_content: str, topic: str) -> str:
     pdf = PDF(topic)
-    
-    # --- FIX: Load fonts BEFORE creating the first page ---
+
+    # Load fonts BEFORE creating the first page
     try:
         pdf.add_font("DejaVu", "", "DejaVuSans.ttf", uni=True)
         pdf.add_font("DejaVu", "B", "DejaVuSans-Bold.ttf", uni=True)
@@ -55,11 +58,11 @@ def create_formatted_pdf(text_content: str, topic: str) -> str:
         return ""
 
     pdf.alias_nb_pages()
-    pdf.add_page() # This is now safe, as it will call the header with fonts loaded
+    pdf.add_page()
     pdf.set_margins(15, 15, 15)
     pdf.set_auto_page_break(auto=True, margin=20)
 
-    # --- Main Title ---
+    # Main Title
     pdf.set_font("DejaVu", "B", 20)
     pdf.set_text_color(40, 40, 40)
     pdf.cell(0, 10, f"Cheatsheet: {topic.title()}", 0, 1, 'C')
@@ -68,11 +71,13 @@ def create_formatted_pdf(text_content: str, topic: str) -> str:
     pdf.line(pdf.get_x(), pdf.get_y(), pdf.get_x() + 180, pdf.get_y())
     pdf.ln(10)
 
-    # --- Body Content ---
+    # Body
     line_height = 7
     pdf.set_text_color(50, 50, 50)
     for line in text_content.split('\n'):
         line = line.strip()
+        if not line:
+            continue
         if line.startswith('## '):
             pdf.set_font("DejaVu", "B", 14)
             pdf.set_text_color(0, 80, 150)
@@ -89,7 +94,17 @@ def create_formatted_pdf(text_content: str, topic: str) -> str:
             pdf.multi_cell(0, line_height, line)
             pdf.ln(3)
 
-    # Generate a user-friendly filename
+    # Append disclaimer at the end of the PDF (added)
+    pdf.ln(5)
+    pdf.set_draw_color(200, 200, 200)
+    x = pdf.get_x()
+    pdf.line(x, pdf.get_y(), x + 180, pdf.get_y())
+    pdf.ln(4)
+    pdf.set_font("DejaVu", "", 9)
+    pdf.set_text_color(120, 120, 120)
+    pdf.multi_cell(0, 6, "Note: This content is for academic purposes only and must not be used for clinical diagnosis.")
+
+    # Filename
     clean_topic = re.sub(r'[\W_]+', '_', topic).lower()
     filename = f"{clean_topic}_cheatsheet.pdf"
     filepath = os.path.join(CHEATSHEET_PATH, filename)
@@ -105,14 +120,17 @@ def handle_query_logic(query: str, session_id: str = None):
         db = FAISS.load_local(temp_db_path, embeddings, allow_dangerous_deserialization=True)
     else:
         if not os.path.exists(FAISS_INDEX_PATH):
-             return "Error: The default knowledge base is not available. Upload a document to begin.", None
+            return "Error: The default knowledge base is not available. Upload a document to begin.", None
         db = FAISS.load_local(FAISS_INDEX_PATH, embeddings, allow_dangerous_deserialization=True)
+
     retriever = db.as_retriever(search_type="similarity", search_kwargs={"k": 5})
+
     @tool
     def question_answer_tool(query: str) -> str:
         """Use for direct questions."""
         chain = RetrievalQA.from_chain_type(llm=llm, chain_type="stuff", retriever=retriever)
         return chain.invoke(query)['result']
+
     @tool
     def concept_explainer_tool(topic: str) -> str:
         """Use for detailed topic explanations."""
@@ -120,6 +138,7 @@ def handle_query_logic(query: str, session_id: str = None):
         prompt = PromptTemplate.from_template("Provide a comprehensive explanation of {topic}.\n\nContext: {context}\nLecture:")
         chain = LLMChain(llm=llm, prompt=prompt)
         return chain.run(topic=topic, context=context)
+
     @tool
     def cheatsheet_generator_tool(topic: str) -> str:
         """Use for cheat sheets or summaries. Generates a PDF."""
@@ -129,30 +148,53 @@ def handle_query_logic(query: str, session_id: str = None):
         cheatsheet_text = chain.run(topic=topic, context=context)
         pdf_filename = create_formatted_pdf(cheatsheet_text, topic)
         return f"PDF_GENERATED::{pdf_filename}::{cheatsheet_text}"
+
     tools = [question_answer_tool, concept_explainer_tool, cheatsheet_generator_tool]
+
     react_prompt = hub.pull("hwchase17/react")
     agent = create_react_agent(llm, tools, react_prompt)
-    agent_executor = AgentExecutor(agent=agent, tools=tools, verbose=False, handle_parsing_errors=True, return_intermediate_steps=True)
+    agent_executor = AgentExecutor(
+        agent=agent,
+        tools=tools,
+        verbose=False,
+        handle_parsing_errors=True,
+        return_intermediate_steps=True
+    )
     response = agent_executor.invoke({"input": query})
+
     final_answer = response.get('output', "I couldn't find an answer.")
     pdf_filename = None
+
     if 'intermediate_steps' in response:
         for _, observation in response['intermediate_steps']:
             if isinstance(observation, str) and observation.startswith("PDF_GENERATED::"):
                 try:
                     pdf_filename = observation.split("::")[1]
-                except IndexError: pass
+                except IndexError:
+                    pass
+
     return final_answer, pdf_filename
 
 # --- Streamlit UI (Unchanged) ---
 st.set_page_config(layout="centered")
-LIGHT = { "bg": "#f8fafb", "bar": "#fff", "bot": "#e9eef6", "user": "#d1e7dd", "text": "#191b22", "input": "#e8edf2", "border": "#d4dde7", "expander": "#f4f7fb" }
-DARK = { "bg": "#18181c", "bar": "#202126", "bot": "#232733", "user": "#22577a", "text": "#f3f5f8", "input": "#242730", "border": "#26282f", "expander": "#24272e" }
-if "theme" not in st.session_state: st.session_state["theme"] = "dark"
-if "chat_history" not in st.session_state: st.session_state["chat_history"] = []
-if "session_id" not in st.session_state: st.session_state["session_id"] = None
-if "active_doc_name" not in st.session_state: st.session_state["active_doc_name"] = None
+LIGHT = {
+    "bg": "#f8fafb", "bar": "#fff", "bot": "#e9eef6", "user": "#d1e7dd",
+    "text": "#191b22", "input": "#e8edf2", "border": "#d4dde7", "expander": "#f4f7fb"
+}
+DARK = {
+    "bg": "#18181c", "bar": "#202126", "bot": "#232733", "user": "#22577a",
+    "text": "#f3f5f8", "input": "#242730", "border": "#26282f", "expander": "#24272e"
+}
+if "theme" not in st.session_state:
+    st.session_state["theme"] = "dark"
+if "chat_history" not in st.session_state:
+    st.session_state["chat_history"] = []
+if "session_id" not in st.session_state:
+    st.session_state["session_id"] = None
+if "active_doc_name" not in st.session_state:
+    st.session_state["active_doc_name"] = None
 THEME = DARK if st.session_state["theme"] == "dark" else LIGHT
+
 # --- Responsive UI Styling ---
 st.markdown(f"""
 <style>
@@ -233,23 +275,38 @@ st.markdown(f"""
     }}
 </style>
 """, unsafe_allow_html=True)
+
 col1, col2, col3 = st.columns([8, 1, 1])
-with col1: st.markdown("<div class='topbar-custom'>Ophthalmology AI Assistant</div>", unsafe_allow_html=True)
+with col1:
+    st.markdown("<div class='topbar-custom'>Ophthalmology AI Assistant</div>", unsafe_allow_html=True)
 with col2:
     if st.button("☀️", key="theme-sun", help="Switch to light mode", use_container_width=True):
-        st.session_state["theme"] = "light"; st.rerun()
+        st.session_state["theme"] = "light"
+        st.rerun()
 with col3:
     if st.button("🌙", key="theme-moon", help="Switch to dark mode", use_container_width=True):
-        st.session_state["theme"] = "dark"; st.rerun()
+        st.session_state["theme"] = "dark"
+        st.rerun()
+
+# --- Chat History Display ---
 for entry in st.session_state.chat_history:
-    if "user" in entry: st.markdown(f"<div class='msg-user'>{entry['user']}</div>", unsafe_allow_html=True)
+    if "user" in entry:
+        st.markdown(f"<div class='msg-user'>{entry['user']}</div>", unsafe_allow_html=True)
     else:
         st.markdown(f"<div class='msg-bot'>{entry['bot']}</div>", unsafe_allow_html=True)
         if entry.get("pdf_filename"):
             pdf_path = os.path.join(CHEATSHEET_PATH, entry["pdf_filename"])
             if os.path.exists(pdf_path):
                 with open(pdf_path, "rb") as pdf_file:
-                    st.download_button("📥 Download Cheatsheet", pdf_file.read(), entry["pdf_filename"], "application/pdf", key=f"dl_{entry['pdf_filename']}_{uuid.uuid4()}")
+                    st.download_button(
+                        "📥 Download Cheatsheet",
+                        pdf_file.read(),
+                        entry["pdf_filename"],
+                        "application/pdf",
+                        key=f"dl_{entry['pdf_filename']}_{uuid.uuid4()}"
+                    )
+
+# --- Upload Expander ---
 with st.expander("Upload a Custom Document"):
     uploaded_file = st.file_uploader("Upload a PDF to ask questions about it", type="pdf")
     if uploaded_file and st.button("Process Document"):
@@ -258,7 +315,8 @@ with st.expander("Upload a Custom Document"):
             temp_dir = os.path.join(TEMP_STORAGE_PATH, session_id)
             os.makedirs(temp_dir, exist_ok=True)
             file_path = os.path.join(temp_dir, uploaded_file.name)
-            with open(file_path, "wb") as buffer: buffer.write(uploaded_file.getbuffer())
+            with open(file_path, "wb") as buffer:
+                buffer.write(uploaded_file.getbuffer())
             doc = fitz.open(file_path)
             full_text = "".join(page.get_text() for page in doc)
             doc.close()
@@ -268,25 +326,44 @@ with st.expander("Upload a Custom Document"):
             temp_db.save_local(temp_dir)
             st.session_state["session_id"] = session_id
             st.session_state["active_doc_name"] = uploaded_file.name
-            st.session_state.chat_history.append({"bot": f"Ready for questions about **{uploaded_file.name}**."})
+            # Include disclaimer in the bot's status message as well (added)
+            st.session_state.chat_history.append({"bot": f"Ready for questions about **{uploaded_file.name}**.{disclaimer_text}"})
             st.rerun()
+
+# --- Active Document Status ---
 if st.session_state["active_doc_name"]:
     st.info(f"Active Document: **{st.session_state['active_doc_name']}**")
     if st.button("Clear Document & Revert to Default"):
         st.session_state["session_id"] = None
         st.session_state["active_doc_name"] = None
-        st.session_state.chat_history.append({"bot": "Reverted to default knowledge base."})
+        st.session_state.chat_history.append({"bot": f"Reverted to default knowledge base.{disclaimer_text}"})
         st.rerun()
+
+# --- User Input & Logic (shows user, then spinner, then assistant with disclaimer) ---
 if user_prompt := st.chat_input("Type your question here..."):
+    # Show user's message immediately
     st.markdown(f"<div class='msg-user'>{user_prompt}</div>", unsafe_allow_html=True)
     st.session_state.chat_history.append({"user": user_prompt})
+
     with st.spinner("Thinking..."):
         answer, pdf_filename = handle_query_logic(user_prompt, st.session_state.get("session_id"))
-        st.markdown(f"<div class='msg-bot'>{answer}</div>", unsafe_allow_html=True)
+        full_answer = f"{answer}{disclaimer_text}"  # append disclaimer
+
+        # Show assistant message with disclaimer
+        st.markdown(f"<div class='msg-bot'>{full_answer}</div>", unsafe_allow_html=True)
+
+        # Download button if PDF exists
         if pdf_filename:
             pdf_path = os.path.join(CHEATSHEET_PATH, pdf_filename)
             if os.path.exists(pdf_path):
                 with open(pdf_path, "rb") as pdf_file:
-                    st.download_button("📥 Download Cheatsheet", pdf_file.read(), pdf_filename, "application/pdf", key=f"dl_{pdf_filename}_{uuid.uuid4()}")
-        st.session_state.chat_history.append({"bot": answer, "pdf_filename": pdf_filename})
+                    st.download_button(
+                        "📥 Download Cheatsheet",
+                        pdf_file.read(),
+                        pdf_filename,
+                        "application/pdf",
+                        key=f"dl_{pdf_filename}_{uuid.uuid4()}"
+                    )
 
+        # Save to chat history (with disclaimer)
+        st.session_state.chat_history.append({"bot": full_answer, "pdf_filename": pdf_filename})
