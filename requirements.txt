@@ -11,3 +11,4 @@ langchainhub
 streamlit-mic-recorder
 gTTS
 google-cloud-texttospeech
+mutagen
