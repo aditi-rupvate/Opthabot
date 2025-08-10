@@ -27,12 +27,12 @@ CHEATSHEET_PATH = "downloads"
 os.makedirs(TEMP_STORAGE_PATH, exist_ok=True)
 os.makedirs(CHEATSHEET_PATH, exist_ok=True)
 
-# --- DISCLAIMER ---
-disclaimer_text = "— Note: This output is for academic purposes only and must not be used for clinical diagnosis."
+# --- DISCLMER ---
+disclmer_text = "— Note: This output is for academic purposes only and must not be used for clinical diagnosis."
 
 # --- Backend Components ---
 embeddings = GoogleGenerativeAIEmbeddings(model="models/embedding-001", google_api_key=GOOGLE_API_KEY)
-llm = ChatGoogleGenerativeAI(model="gemini-1.5-flash-latest", temperature=0.3, google_api_key=GoogleGenerativeAIEmbeddings
+llm = ChatGoogleGenerativeAI(model="gemini-1.5-flash-latest", temperature=0.3, google_api_key=GoogleGenerativeAIEmbeddings)
 
 # --- Text-to-Speech: mobile-safe (returns base64 + renders HTML audio) ---
 def text_to_audio_b64(text: str, tld: str) -> str | None:
