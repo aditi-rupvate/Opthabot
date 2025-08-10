@@ -33,7 +33,7 @@ disclaimer_text = "— Note: This output is for academic purposes only and must 
 embeddings = GoogleGenerativeAIEmbeddings(model="models/embedding-001", google_api_key=GOOGLE_API_KEY)
 llm = ChatGoogleGenerativeAI(model="gemini-1.5-flash-latest", temperature=0.3, google_api_key=GOOGLE_API_KEY)
 
-# --- Text-to-Speech: mobile-safe (returns base64 + renders HTML audio) ---
+# --- Text-to-Speech: mobile/desktop safe (returns base64 + renders HTML audio) ---
 def text_to_audio_b64(text: str, tld: str) -> str | None:
     try:
         tts = gTTS(text=text, lang='en', tld=tld, slow=False)
@@ -52,42 +52,92 @@ def text_to_audio_b64(text: str, tld: str) -> str | None:
         return None
 
 def render_audio_player_b64(audio_b64: str):
-    # Mobile-safe autoplay with fallback on first user gesture (iOS/Android)
+    # Cross-device, cross-browser audio with autoplay + graceful fallback
     audio_id = f"audio_{uuid.uuid4().hex}"
-    audio_html = f"""
-    <audio id="{audio_id}" autoplay playsinline preload="auto"
-           style="width:0;height:0;visibility:hidden;" controlslist="nodownload noplaybackrate"
+    btn_id = f"btn_{uuid.uuid4().hex}"
+    html = f"""
+    <style>
+      /* Tiny fallback button (only shows if autoplay is blocked) */
+      #{btn_id} {{
+        position: fixed; bottom: 14px; right: 14px; z-index: 9999;
+        padding: 10px 14px; border-radius: 9999px; border: 0;
+        background: #1f6feb; color: #fff; font-weight: 600;
+        box-shadow: 0 2px 10px rgba(0,0,0,.2); display: none;
+      }}
+    </style>
+
+    <audio id="{audio_id}" autoplay playsinline preload="auto" muted
+           style="width:0;height:0;visibility:hidden;"
+           controlslist="nodownload noplaybackrate"
            src="data:audio/mpeg;base64,{audio_b64}">
       <source src="data:audio/mpeg;base64,{audio_b64}" type="audio/mpeg">
     </audio>
+
+    <button id="{btn_id}" aria-label="Play voice">🔊 Tap to play</button>
+
     <script>
       (function() {{
         const a = document.getElementById("{audio_id}");
-        if (!a) return;
-        function tryPlay() {{
-          const p = a.play();
-          if (p && typeof p.then === "function") {{
-            p.catch(() => {{
-              // If autoplay is blocked, unlock on the next user gesture
-              const unlock = () => {{
-                a.play().catch(() => {{ /* ignore */ }});
-                document.removeEventListener('touchstart', unlock, true);
-                document.removeEventListener('click', unlock, true);
-              }};
-              document.addEventListener('touchstart', unlock, true);
-              document.addEventListener('click', unlock, true);
-            }});
-          }}
+        const btn = document.getElementById("{btn_id}");
+
+        // Pause any previous injected audio to avoid overlaps
+        document.querySelectorAll('audio[id^="audio_"]').forEach(el => {{
+          if (el !== a) {{ try {{ el.pause(); }} catch(e) {{}} }}
+        }});
+
+        a.volume = 1.0;
+
+        function showBtn() {{ btn.style.display = 'inline-block'; }}
+        function hideBtn() {{ btn.style.display = 'none'; }}
+
+        function unlockAndPlay() {{
+          try {{
+            a.muted = false;
+            a.volume = 1.0;
+            a.currentTime = 0;
+            a.play().then(hideBtn).catch(() => {{ /* ignore */ }});
+          }} catch(e) {{}}
+          document.removeEventListener('touchstart', unlockAndPlay, true);
+          document.removeEventListener('click', unlockAndPlay, true);
+          document.removeEventListener('keydown', unlockAndPlay, true);
         }}
+
+        function attachGestureUnlock() {{
+          document.addEventListener('touchstart', unlockAndPlay, true);
+          document.addEventListener('click', unlockAndPlay, true);
+          document.addEventListener('keydown', unlockAndPlay, true); // desktop keyboards
+          btn.addEventListener('click', (e) => {{ e.preventDefault(); unlockAndPlay(); }}, {{ once: true }});
+        }}
+
+        function attemptPlay(unmuteAfter = true) {{
+          try {{
+            const p = a.play();
+            if (p && typeof p.then === "function") {{
+              p.then(() => {{
+                if (unmuteAfter) {{
+                  setTimeout(() => {{
+                    try {{ a.muted = false; a.volume = 1.0; }} catch(e) {{}}
+                  }}, 50);
+                }}
+              }}).catch(() => {{ attachGestureUnlock(); showBtn(); }});
+            }}
+          }} catch(e) {{ attachGestureUnlock(); showBtn(); }}
+        }}
+
+        // Retry when tab becomes visible again (Streamlit reruns, tab switch, etc.)
+        document.addEventListener('visibilitychange', () => {{
+          if (!document.hidden) attemptPlay(false);
+        }});
+
         if (document.readyState === 'complete' || document.readyState === 'interactive') {{
-          tryPlay();
+          attemptPlay(true);
         }} else {{
-          document.addEventListener('DOMContentLoaded', tryPlay, {{ once: true }});
+          document.addEventListener('DOMContentLoaded', () => attemptPlay(true), {{ once: true }});
         }}
       }})();
     </script>
     """
-    st.markdown(audio_html, unsafe_allow_html=True)
+    st.markdown(html, unsafe_allow_html=True)
 
 # --- PDF Generation Class ---
 class PDF(FPDF):
@@ -128,7 +178,7 @@ def create_formatted_pdf(text_content: str, topic: str) -> str:
     line_height = 7
     pdf.set_text_color(50, 50, 50)
     for line in text_content.split('\n'):
-        line = strip = line.strip()
+        line = line.strip()
         if not line:
             continue
         if line.startswith('## '):
@@ -212,7 +262,6 @@ def handle_query_logic(query: str, session_id: str = None):
     agent = create_react_agent(llm, tools, prompt)
     
     memory = ConversationBufferMemory(memory_key="chat_history", return_messages=True)
-    
     for msg in st.session_state.chat_history:
         if "user" in msg:
             memory.chat_memory.add_user_message(msg["user"])
