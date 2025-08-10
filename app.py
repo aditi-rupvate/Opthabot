@@ -10,11 +10,12 @@ from langchain.chains import RetrievalQA, LLMChain
 from langchain.text_splitter import RecursiveCharacterTextSplitter
 from langchain_community.vectorstores import FAISS
 from langchain_google_genai import ChatGoogleGenerativeAI, GoogleGenerativeAIEmbeddings
-from langchain.prompts import PromptTemplate, SystemMessagePromptTemplate, ChatPromptTemplate, MessagesPlaceholder
-from langchain import hub
+from langchain.prompts import PromptTemplate, ChatPromptTemplate, MessagesPlaceholder
 from langchain.tools import StructuredTool
 from streamlit_mic_recorder import speech_to_text
 from gtts import gTTS
+from langchain.memory import ConversationBufferMemory
+from langchain_core.messages import AIMessage, HumanMessage
 
 # --- 1. Configuration ---
 GOOGLE_API_KEY = st.secrets.get("GOOGLE_API_KEY", "YOUR_DEFAULT_API_KEY_HERE")
@@ -121,7 +122,7 @@ def create_formatted_pdf(text_content: str, topic: str) -> str:
     pdf.output(filepath)
     return filename
 
-# --- Main Query Logic (with Corrected Prompt) ---
+# --- Main Query Logic (with Corrected Agent and Memory) ---
 def handle_query_logic(query: str, session_id: str = None):
     if session_id:
         temp_db_path = os.path.join(TEMP_STORAGE_PATH, session_id)
@@ -157,18 +158,41 @@ def handle_query_logic(query: str, session_id: str = None):
         StructuredTool.from_function(func=cheatsheet_generator_func, name="CheatsheetGeneratorTool", description="Use ONLY when explicitly asked for a downloadable PDF or 'cheat sheet'.")
     ]
     
-    # --- FIX: Construct the agent prompt correctly ---
+    # --- FIX: Manually construct the prompt and memory correctly ---
     system_instruction = "You are an expert ophthalmology assistant. Your purpose is to answer questions strictly related to ophthalmology or the provided documents. If the user asks a question that is outside of this scope, you must politely decline and state that you can only answer questions about ophthalmology."
     
     prompt = ChatPromptTemplate.from_messages([
         ("system", system_instruction),
+        MessagesPlaceholder(variable_name="chat_history"),
         ("human", "{input}"),
         MessagesPlaceholder(variable_name="agent_scratchpad"),
     ])
 
     agent = create_react_agent(llm, tools, prompt)
-    agent_executor = AgentExecutor(agent=agent, tools=tools, verbose=False, handle_parsing_errors=True, return_intermediate_steps=True)
+    
+    # Create memory object
+    memory = ConversationBufferMemory(memory_key="chat_history", return_messages=True)
+    
+    # Populate memory with the current chat history from session state
+    for msg in st.session_state.chat_history:
+        if "user" in msg:
+            memory.chat_memory.add_user_message(msg["user"])
+        else:
+            # Strip HTML from bot message before adding to memory
+            clean_bot_message = re.sub(r'<.*?>', '', msg["bot"])
+            memory.chat_memory.add_ai_message(clean_bot_message)
+
+    agent_executor = AgentExecutor(
+        agent=agent, 
+        tools=tools, 
+        memory=memory, 
+        verbose=False, 
+        handle_parsing_errors=True,
+        return_intermediate_steps=True
+    )
+
     response = agent_executor.invoke({"input": query})
+    
     final_answer = response.get('output', "I couldn't find an answer.")
     pdf_filename = None
 
@@ -210,14 +234,12 @@ with st.sidebar:
     st.session_state.voice_enabled = st.toggle("Enable Voice Chat", value=st.session_state.voice_enabled, help="Enable voice input and spoken responses.")
 
     if st.session_state.voice_enabled:
-        # Input Accent Selection
         input_accent_options = {'American (US)': 'en-US', 'British (UK)': 'en-GB', 'Indian': 'en-IN'}
-        selected_input_label = st.selectbox("Your Accent (for input)", options=list(input_accent_options.keys()))
+        selected_input_label = st.selectbox("Your Accent (for input)", options=list(input_accent_options.keys()), index=list(input_accent_options.values()).index(st.session_state.input_accent))
         st.session_state.input_accent = input_accent_options[selected_input_label]
         
-        # Output Accent Selection
         output_accent_options = {'American (US)': 'com', 'British (UK)': 'co.uk', 'Indian': 'co.in'}
-        selected_output_label = st.selectbox("Assistant's Accent (for output)", options=list(output_accent_options.keys()))
+        selected_output_label = st.selectbox("Assistant's Accent (for output)", options=list(output_accent_options.keys()), index=list(output_accent_options.values()).index(st.session_state.output_accent))
         st.session_state.output_accent = output_accent_options[selected_output_label]
 
 # --- UI Styling ---
@@ -288,7 +310,7 @@ if user_prompt:
     with st.spinner("Thinking..."):
         answer, pdf_filename = handle_query_logic(user_prompt, st.session_state.get("session_id"))
         
-        raw_answer_text = re.sub(r'<.*?>', '', answer) # Strip HTML tags for TTS
+        raw_answer_text = re.sub(r'<.*?>', '', answer) 
         full_answer_html = f"{answer}<br><span class='note-text'>{disclaimer_text}</span>"
         
         st.markdown(f"<div class='msg-bot'>{full_answer_html}</div>", unsafe_allow_html=True)
@@ -306,4 +328,3 @@ if user_prompt:
         
         if st.session_state.voice_enabled:
             st.rerun()
- 
