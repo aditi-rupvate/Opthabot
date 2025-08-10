@@ -52,12 +52,18 @@ def text_to_audio_b64(text: str, tld: str) -> str | None:
         return None
 
 def render_audio_player_b64(audio_b64: str):
-    # Cross-device, cross-browser audio with autoplay + graceful fallback
+    """
+    Cross-device voice playback:
+      1) Try Web Audio API (decode + play) after ensuring AudioContext is unlocked.
+      2) If that fails, fall back to <audio> with autoplay + gesture unlock.
+      3) Tiny fallback button appears only if autoplay is blocked.
+    """
     audio_id = f"audio_{uuid.uuid4().hex}"
     btn_id = f"btn_{uuid.uuid4().hex}"
+    data_url = f"data:audio/mpeg;base64,{audio_b64}"
+
     html = f"""
     <style>
-      /* Tiny fallback button (only shows if autoplay is blocked) */
       #{btn_id} {{
         position: fixed; bottom: 14px; right: 14px; z-index: 9999;
         padding: 10px 14px; border-radius: 9999px; border: 0;
@@ -69,71 +75,128 @@ def render_audio_player_b64(audio_b64: str):
     <audio id="{audio_id}" autoplay playsinline preload="auto" muted
            style="width:0;height:0;visibility:hidden;"
            controlslist="nodownload noplaybackrate"
-           src="data:audio/mpeg;base64,{audio_b64}">
-      <source src="data:audio/mpeg;base64,{audio_b64}" type="audio/mpeg">
+           src="{data_url}">
+      <source src="{data_url}" type="audio/mpeg">
     </audio>
 
     <button id="{btn_id}" aria-label="Play voice">🔊 Tap to play</button>
 
     <script>
       (function() {{
+        const dataUrl = "{data_url}";
         const a = document.getElementById("{audio_id}");
         const btn = document.getElementById("{btn_id}");
+        let ctx;
 
         // Pause any previous injected audio to avoid overlaps
         document.querySelectorAll('audio[id^="audio_"]').forEach(el => {{
           if (el !== a) {{ try {{ el.pause(); }} catch(e) {{}} }}
         }});
 
-        a.volume = 1.0;
-
         function showBtn() {{ btn.style.display = 'inline-block'; }}
         function hideBtn() {{ btn.style.display = 'none'; }}
 
-        function unlockAndPlay() {{
+        function base64ToUint8(base64) {{
+          const bin = atob(base64);
+          const len = bin.length;
+          const bytes = new Uint8Array(len);
+          for (let i = 0; i < len; i++) bytes[i] = bin.charCodeAt(i);
+          return bytes;
+        }}
+
+        function getCtx() {{
+          if (window._ttsCtx) return window._ttsCtx;
+          const AC = window.AudioContext || window.webkitAudioContext;
+          if (!AC) return null;
+          window._ttsCtx = new AC();
+          return window._ttsCtx;
+        }}
+
+        function ensureUnlocked() {{
+          ctx = getCtx();
+          if (!ctx) return Promise.reject(new Error("No AudioContext"));
+          if (ctx.state === "running") return Promise.resolve();
+          return ctx.resume().catch(() => new Promise(resolve => {{
+            const unlock = () => {{
+              ctx.resume().finally(() => {{
+                document.removeEventListener('touchstart', unlock, true);
+                document.removeEventListener('click', unlock, true);
+                document.removeEventListener('keydown', unlock, true);
+                hideBtn();
+                resolve();
+              }});
+            }};
+            document.addEventListener('touchstart', unlock, true);
+            document.addEventListener('click', unlock, true);
+            document.addEventListener('keydown', unlock, true);
+            showBtn();
+          }}));
+        }}
+
+        function playViaWebAudio() {{
           try {{
-            a.muted = false;
-            a.volume = 1.0;
-            a.currentTime = 0;
-            a.play().then(hideBtn).catch(() => {{ /* ignore */ }});
-          }} catch(e) {{}}
-          document.removeEventListener('touchstart', unlockAndPlay, true);
-          document.removeEventListener('click', unlockAndPlay, true);
-          document.removeEventListener('keydown', unlockAndPlay, true);
+            const base64 = dataUrl.split(',')[1];
+            const bytes = base64ToUint8(base64);
+            return ctx.decodeAudioData(bytes.buffer).then(buffer => {{
+              const src = ctx.createBufferSource();
+              src.buffer = buffer;
+              src.connect(ctx.destination);
+              src.start(0);
+            }});
+          }} catch (e) {{
+            return Promise.reject(e);
+          }}
         }}
 
-        function attachGestureUnlock() {{
-          document.addEventListener('touchstart', unlockAndPlay, true);
-          document.addEventListener('click', unlockAndPlay, true);
-          document.addEventListener('keydown', unlockAndPlay, true); // desktop keyboards
-          btn.addEventListener('click', (e) => {{ e.preventDefault(); unlockAndPlay(); }}, {{ once: true }});
-        }}
-
-        function attemptPlay(unmuteAfter = true) {{
+        function fallbackHtmlAudio() {{
+          a.volume = 1.0;
+          function unlockAndPlay() {{
+            try {{
+              a.muted = false;
+              a.volume = 1.0;
+              a.currentTime = 0;
+              a.play().then(hideBtn).catch(() => {{ /* ignore */ }});
+            }} catch(e) {{}}
+            document.removeEventListener('touchstart', unlockAndPlay, true);
+            document.removeEventListener('click', unlockAndPlay, true);
+            document.removeEventListener('keydown', unlockAndPlay, true);
+          }}
+          function attachGestureUnlock() {{
+            document.addEventListener('touchstart', unlockAndPlay, true);
+            document.addEventListener('click', unlockAndPlay, true);
+            document.addEventListener('keydown', unlockAndPlay, true);
+            btn.addEventListener('click', (e) => {{ e.preventDefault(); unlockAndPlay(); }}, {{ once: true }});
+          }}
           try {{
             const p = a.play();
-            if (p && typeof p.then === "function") {{
+            if (p && typeof p.then === 'function') {{
               p.then(() => {{
-                if (unmuteAfter) {{
-                  setTimeout(() => {{
-                    try {{ a.muted = false; a.volume = 1.0; }} catch(e) {{}}
-                  }}, 50);
-                }}
+                setTimeout(() => {{ try {{ a.muted = false; }} catch(e) {{}} }}, 50);
               }}).catch(() => {{ attachGestureUnlock(); showBtn(); }});
             }}
           }} catch(e) {{ attachGestureUnlock(); showBtn(); }}
         }}
 
-        // Retry when tab becomes visible again (Streamlit reruns, tab switch, etc.)
-        document.addEventListener('visibilitychange', () => {{
-          if (!document.hidden) attemptPlay(false);
-        }});
+        function run() {{
+          ensureUnlocked()
+            .then(() => playViaWebAudio())
+            .catch(() => fallbackHtmlAudio());
+        }}
 
         if (document.readyState === 'complete' || document.readyState === 'interactive') {{
-          attemptPlay(true);
+          run();
         }} else {{
-          document.addEventListener('DOMContentLoaded', () => attemptPlay(true), {{ once: true }});
+          document.addEventListener('DOMContentLoaded', run, {{ once: true }});
         }}
+
+        // Retry when tab becomes visible again (e.g., rerun, tab switch)
+        document.addEventListener('visibilitychange', () => {{
+          if (!document.hidden) {{
+            ensureUnlocked()
+              .then(() => playViaWebAudio())
+              .catch(() => fallbackHtmlAudio());
+          }}
+        }});
       }})();
     </script>
     """
