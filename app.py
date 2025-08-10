@@ -53,8 +53,9 @@ def text_to_audio_b64(text: str, tld: str) -> str | None:
 
 def render_audio_player_b64(audio_b64: str, consent: bool | None = None):
     """
-    Renders an audio element. If consent is not given, shows controls without autoplay.
-    If consent is given, attempts autoplay and falls back to first user gesture (mobile-safe).
+    If consent is False/None -> show visible controls (no autoplay).
+    If consent is True      -> try autoplay; if blocked, show a 'Tap to play' floating button and
+                               also listen for pointer/keyboard to unlock.
     """
     if consent is None:
         consent = bool(st.session_state.get("autoplay_consent", False))
@@ -62,12 +63,11 @@ def render_audio_player_b64(audio_b64: str, consent: bool | None = None):
     audio_id = f"audio_{uuid.uuid4().hex}"
 
     if consent:
-        # Hidden, autoplaying player
-        controls_attr = ""  # no visible controls
-        style = "width:0;height:0;visibility:hidden;"
+        # Keep element 'present' but visually off-screen to avoid iOS autoplay quirks
+        controls_attr = ""
+        style = "position:absolute;left:-9999px;width:1px;height:1px;opacity:0;pointer-events:none;"
         autoplay_attr = "autoplay"
     else:
-        # Visible player with controls; no autoplay
         controls_attr = "controls"
         style = "width:100%;height:32px;visibility:visible;"
         autoplay_attr = ""
@@ -85,30 +85,73 @@ def render_audio_player_b64(audio_b64: str, consent: bool | None = None):
         script_html = f"""
         <script>
           (function() {{
-            const a = document.getElementById("{audio_id}");
-            if (!a) return;
+            var id = "{audio_id}";
+            function getAudio() {{ return document.getElementById(id); }}
 
-            function tryPlay() {{
-              const p = a.play();
-              if (p && typeof p.then === "function") {{
-                p.catch(() => {{
-                  // If autoplay is blocked, unlock on the next user gesture
-                  const unlock = () => {{
-                    a.play().catch(() => {{ /* ignore */ }});
-                    document.removeEventListener('touchstart', unlock, true);
-                    document.removeEventListener('click', unlock, true);
-                  }};
-                  document.addEventListener('touchstart', unlock, true);
-                  document.addEventListener('click', unlock, true);
-                }});
+            function tryPlay(a) {{
+              if (!a) return false;
+              try {{
+                var p = a.play();
+                if (p && typeof p.then === "function") {{
+                  p.then(function(){{ /* playing */ }}).catch(function(err) {{
+                    createUnlock(a);
+                  }});
+                }}
+              }} catch (e) {{
+                createUnlock(a);
               }}
+              return true;
             }}
 
-            if (document.readyState === 'complete' || document.readyState === 'interactive') {{
-              tryPlay();
-            }} else {{
-              document.addEventListener('DOMContentLoaded', tryPlay, {{ once: true }});
+            function createUnlock(a) {{
+              if (window.__audioUnlockBtn__) return;
+
+              var btn = document.createElement('button');
+              btn.type = 'button';
+              btn.textContent = '🔊 Tap to play';
+              btn.style.cssText = 'position:fixed;bottom:16px;right:16px;padding:10px 14px;'+
+                                  'border-radius:12px;border:1px solid #ccc;background:#fff;'+
+                                  'box-shadow:0 2px 10px rgba(0,0,0,.12);z-index:2147483647;'+
+                                  'font-size:14px;cursor:pointer;';
+              window.__audioUnlockBtn__ = btn;
+
+              function unlock() {{
+                try {{ a.load(); }} catch(_){{
+                  /* some browsers need load() before play */
+                }}
+                a.muted = false;
+                a.volume = 1;
+                a.play().then(function(){ removeUnlock(); })
+                         .catch(function(){ /* keep button until it works */ });
+              }}
+
+              function removeUnlock() {{
+                if (btn && btn.parentNode) btn.parentNode.removeChild(btn);
+                window.__audioUnlockBtn__ = null;
+                document.removeEventListener('pointerdown', unlock, true);
+                document.removeEventListener('keydown', onKey, true);
+              }}
+
+              function onKey(e) {{
+                if (e.key === ' ' || e.key === 'Enter') unlock();
+              }}
+
+              btn.addEventListener('click', unlock, {{ once: true }});
+              document.addEventListener('pointerdown', unlock, true);
+              document.addEventListener('keydown', onKey, true);
+              document.body.appendChild(btn);
             }}
+
+            // Wait until the audio element exists (Streamlit can re-render)
+            var attempts = 0, maxAttempts = 40;
+            (function waitForEl(){{
+              var a = getAudio();
+              if (a) {{
+                tryPlay(a);
+              }} else if (attempts++ < maxAttempts) {{
+                setTimeout(waitForEl, 100);
+              }}
+            }})();
           }})();
         </script>
         """
@@ -238,7 +281,6 @@ def handle_query_logic(query: str, session_id: str = None):
     agent = create_react_agent(llm, tools, prompt)
     
     memory = ConversationBufferMemory(memory_key="chat_history", return_messages=True)
-    
     for msg in st.session_state.chat_history:
         if "user" in msg:
             memory.chat_memory.add_user_message(msg["user"])
@@ -337,7 +379,7 @@ else:
                 help="On mobile, autoplay may need one tap after consenting to unlock."
             )
             if st.session_state.autoplay_consent:
-                st.caption("Autoplay enabled. If nothing plays immediately on mobile, tap once anywhere to unlock audio.")
+                st.caption("Autoplay enabled. If nothing plays immediately on mobile, tap once anywhere to unlock audio. Also check the iPhone mute switch.")
 
     st.markdown(f"""
     <style>
