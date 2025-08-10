@@ -1,12 +1,11 @@
 import os
 import re
 import uuid
-import time
+import base64
 import streamlit as st
 from fpdf import FPDF
 import fitz  # PyMuPDF
 from langchain.agents import AgentExecutor, create_react_agent
-from langchain.chains import RetrievalQA, LLMChain
 from langchain.text_splitter import RecursiveCharacterTextSplitter
 from langchain_community.vectorstores import FAISS
 from langchain_google_genai import ChatGoogleGenerativeAI, GoogleGenerativeAIEmbeddings
@@ -16,8 +15,12 @@ from langchain.tools import StructuredTool
 from streamlit_mic_recorder import speech_to_text
 from gtts import gTTS
 from langchain.memory import ConversationBufferMemory
+from langchain_core.runnables import RunnablePassthrough
+from langchain_core.output_parsers import StrOutputParser
 
 # --- 1. Configuration ---
+# Set LangSmith tracing to false to avoid API key warnings if not configured
+os.environ["LANGCHAIN_TRACING_V2"] = "false"
 GOOGLE_API_KEY = st.secrets.get("GOOGLE_API_KEY", "YOUR_DEFAULT_API_KEY_HERE")
 FAISS_INDEX_PATH = "oxford_handbook_kb"
 TEMP_STORAGE_PATH = "temp_user_docs"
@@ -32,20 +35,24 @@ disclaimer_text = "— Note: This output is for academic purposes only and must 
 embeddings = GoogleGenerativeAIEmbeddings(model="models/embedding-001", google_api_key=GOOGLE_API_KEY)
 llm = ChatGoogleGenerativeAI(model="gemini-1.5-flash-latest", temperature=0.3, google_api_key=GOOGLE_API_KEY)
 
-# --- Text-to-Speech Function (Stable, Non-blocking) ---
+# --- Text-to-Speech Function (with Base64 embedding to prevent errors) ---
 def text_to_audio_autoplay(text: str, tld: str):
     try:
         tts = gTTS(text=text, lang='en', tld=tld, slow=False)
         audio_filename = os.path.join(CHEATSHEET_PATH, f"response_{uuid.uuid4()}.mp3")
         tts.save(audio_filename)
 
-        with open(audio_filename, "rb") as audio_file:
-            audio_bytes = audio_file.read()
-            # This sends the audio to the browser for non-blocking playback.
-            st.audio(audio_bytes, format="audio/mp3", autoplay=True)
+        with open(audio_filename, "rb") as f:
+            data = f.read()
+            b64 = base64.b64encode(data).decode()
+            md = f"""
+                <audio controls autoplay="true" style="display:none;">
+                <source src="data:audio/mp3;base64,{b64}" type="audio/mp3">
+                </audio>
+                """
+            st.markdown(md, unsafe_allow_html=True)
         
-        time.sleep(0.5) # Brief delay to ensure file is read before deletion
-        
+        # Clean up the file after embedding it
         if os.path.exists(audio_filename):
             os.remove(audio_filename)
             
@@ -72,10 +79,11 @@ class PDF(FPDF):
 def create_formatted_pdf(text_content: str, topic: str) -> str:
     pdf = PDF(topic)
     try:
+        # Ensure you have the DejaVu fonts downloaded and in your project path
         pdf.add_font("DejaVu", "", "DejaVuSans.ttf", uni=True)
         pdf.add_font("DejaVu", "B", "DejaVuSans-Bold.ttf", uni=True)
     except RuntimeError:
-        st.error("Could not find 'DejaVuSans.ttf' or 'DejaVuSans-Bold.ttf'.")
+        st.error("Could not find 'DejaVuSans.ttf' or 'DejaVuSans-Bold.ttf'. Please ensure the font files are in the same directory as app.py.")
         return ""
     pdf.alias_nb_pages()
     pdf.add_page()
@@ -121,7 +129,7 @@ def create_formatted_pdf(text_content: str, topic: str) -> str:
     pdf.output(filepath)
     return filename
 
-# --- Main Query Logic ---
+# --- Main Query Logic (Modernized with LCEL) ---
 def handle_query_logic(query: str, chat_history: list, session_id: str = None):
     if session_id:
         temp_db_path = os.path.join(TEMP_STORAGE_PATH, session_id)
@@ -133,21 +141,28 @@ def handle_query_logic(query: str, chat_history: list, session_id: str = None):
     
     retriever = db.as_retriever(search_type="similarity", search_kwargs={"k": 5})
 
+    def create_rag_chain(prompt_template_str):
+        return (
+            {"context": retriever, "question": RunnablePassthrough()}
+            | PromptTemplate.from_template(prompt_template_str)
+            | llm
+            | StrOutputParser()
+        )
+
     def question_answer_func(query: str) -> str:
-        chain = RetrievalQA.from_chain_type(llm=llm, chain_type="stuff", retriever=retriever)
-        return chain.invoke(query)['result']
+        prompt_str = "Context: {context}\n\nQuestion: {question}\n\nAnswer:"
+        rag_chain = create_rag_chain(prompt_str)
+        return rag_chain.invoke(query)
 
     def concept_explainer_func(topic: str) -> str:
-        context = "\n\n".join([doc.page_content for doc in retriever.get_relevant_documents(topic)])
-        prompt_template = PromptTemplate.from_template("Provide a comprehensive explanation or summary for {topic}.\n\nContext: {context}\nResponse:")
-        chain = LLMChain(llm=llm, prompt=prompt_template)
-        return chain.run(topic=topic, context=context)
+        prompt_str = "Provide a comprehensive explanation for {question}.\n\nContext: {context}\nResponse:"
+        rag_chain = create_rag_chain(prompt_str)
+        return rag_chain.invoke(topic)
 
     def cheatsheet_generator_func(topic: str) -> str:
-        context = "\n\n".join([doc.page_content for doc in retriever.get_relevant_documents(topic)])
-        prompt_template = PromptTemplate.from_template("Create a detailed cheat sheet for {topic} using '##' for headings and '-' for list items.\nContext: {context}\nCheat Sheet:")
-        chain = LLMChain(llm=llm, prompt=prompt_template)
-        cheatsheet_text = chain.run(topic=topic, context=context)
+        prompt_str = "Create a detailed cheat sheet for {question} using '##' for headings and '-' for list items.\nContext: {context}\nCheat Sheet:"
+        rag_chain = create_rag_chain(prompt_str)
+        cheatsheet_text = rag_chain.invoke(topic)
         pdf_filename = create_formatted_pdf(cheatsheet_text, topic)
         return f"PDF_GENERATED::{pdf_filename}::{cheatsheet_text}"
 
@@ -164,40 +179,21 @@ def handle_query_logic(query: str, chat_history: list, session_id: str = None):
     agent = create_react_agent(llm, tools, prompt)
     
     memory = ConversationBufferMemory(memory_key="chat_history", return_messages=True)
-    
     for msg in chat_history:
-        if "user" in msg:
-            memory.chat_memory.add_user_message(msg["user"])
-        else:
-            clean_bot_message = re.sub(r'<.*?>', '', msg["bot"])
-            memory.chat_memory.add_ai_message(clean_bot_message)
+        if "user" in msg: memory.chat_memory.add_user_message(msg["user"])
+        else: memory.chat_memory.add_ai_message(re.sub(r'<.*?>', '', msg["bot"]))
 
-    agent_executor = AgentExecutor(
-        agent=agent, 
-        tools=tools, 
-        memory=memory, 
-        verbose=False, 
-        handle_parsing_errors=True,
-        return_intermediate_steps=True
-    )
-
+    agent_executor = AgentExecutor(agent=agent, tools=tools, memory=memory, verbose=False, handle_parsing_errors=True)
     response = agent_executor.invoke({"input": query})
     
     final_answer = response.get('output', "I couldn't find an answer.")
-    pdf_filename = None
-
-    if 'intermediate_steps' in response:
-        for _, observation in response['intermediate_steps']:
-            if isinstance(observation, str) and observation.startswith("PDF_GENERATED::"):
-                try: pdf_filename = observation.split("::")[1]
-                except IndexError: pass
-    return final_answer, pdf_filename
+    return final_answer
 
 # --- Streamlit UI ---
-st.set_page_config(layout="centered")
+st.set_page_config(layout="centered", page_title="Ophthalmology AI")
 
-LIGHT = {"bg": "#f8fafb", "bar": "#fff", "bot": "#e9eef6", "user": "#d1e7dd", "text": "#191b22", "input": "#e8edf2", "border": "#d4dde7", "expander": "#f4f7fb"}
-DARK = {"bg": "#18181c", "bar": "#202126", "bot": "#232733", "user": "#22577a", "text": "#f3f5f8", "input": "#242730", "border": "#26282f", "expander": "#24272e"}
+LIGHT = {"bg": "#f8fafb", "bar": "#fff", "bot": "#e9eef6", "user": "#d1e7dd", "text": "#191b22"}
+DARK = {"bg": "#18181c", "bar": "#202126", "bot": "#232733", "user": "#22577a", "text": "#f3f5f8"}
 
 # Initialize session state variables
 if "theme" not in st.session_state: st.session_state.theme = "dark"
@@ -213,104 +209,116 @@ THEME = DARK if st.session_state.theme == "dark" else LIGHT
 # --- Sidebar for Settings ---
 with st.sidebar:
     st.header("Settings")
-    is_dark_on = st.session_state.theme == "dark"
-    toggled = st.toggle("Dark Mode", value=is_dark_on, key="theme_toggle", help="Switch themes")
-    if toggled != is_dark_on:
-        st.session_state.theme = "dark" if toggled else "light"
-        st.rerun()
+    if st.toggle("Dark Mode", value=st.session_state.theme == "dark"): st.session_state.theme = "dark"
+    else: st.session_state.theme = "light"
 
     st.divider()
     st.header("Voice Settings")
-    st.session_state.voice_enabled = st.toggle("Enable Voice Chat", value=st.session_state.voice_enabled, help="Enable voice input and spoken responses.")
-
+    st.session_state.voice_enabled = st.toggle("Enable Voice Chat", value=st.session_state.voice_enabled)
     if st.session_state.voice_enabled:
-        input_accent_options = {'American (US)': 'en-US', 'British (UK)': 'en-GB', 'Indian': 'en-IN'}
-        selected_input_label = st.selectbox("Your Accent (for input)", options=list(input_accent_options.keys()), index=list(input_accent_options.values()).index(st.session_state.input_accent))
-        st.session_state.input_accent = input_accent_options[selected_input_label]
-        
-        output_accent_options = {'American (US)': 'com', 'British (UK)': 'co.uk', 'Indian': 'co.in'}
-        selected_output_label = st.selectbox("Assistant's Accent (for output)", options=list(output_accent_options.keys()), index=list(output_accent_options.values()).index(st.session_state.output_accent))
-        st.session_state.output_accent = output_accent_options[selected_output_label]
+        accent_map = {'American (US)': 'en-US', 'British (UK)': 'en-GB', 'Indian': 'en-IN'}
+        output_map = {'American (US)': 'com', 'British (UK)': 'co.uk', 'Indian': 'co.in'}
+        selected_input = st.selectbox("Your Accent", list(accent_map.keys()))
+        selected_output = st.selectbox("Assistant's Accent", list(output_map.keys()))
+        st.session_state.input_accent = accent_map[selected_input]
+        st.session_state.output_accent = output_map[selected_output]
 
 # --- UI Styling ---
 st.markdown(f"""
 <style>
     .stApp {{ background: {THEME['bg']}; color: {THEME['text']}; }}
-    .topbar-custom {{ background: {THEME['bar']}; border-radius: 16px; padding: 1.3em 1.2em 1.15em 2.1em; margin-bottom: 1.6em; box-shadow: 0 2px 12px 0 rgba(44,46,66,0.06); font-size: 1.55rem; font-weight: 800; letter-spacing: .02em; }}
-    div[data-testid="stChatMessage"] {{ background: {THEME['bot']}; border-radius: 16px 16px 20px 4px; border: 1.5px solid {THEME['border']}; box-shadow: 0 1px 12px 0 rgba(44,46,66,0.05); }}
-    div[data-testid="stChatMessage"] div[data-testid="stMarkdown"] {{ color: {THEME['text']}; }}
-    div[data-testid="stChatMessage"][data-testid-role="user"] {{ background: {THEME['user']}; border-radius: 16px 16px 4px 20px; }}
+    .topbar-custom {{ background: {THEME['bar']}; border-radius: 16px; padding: 1.3em 1.2em 1.15em 2.1em; margin-bottom: 1.6em; font-size: 1.55rem; font-weight: 800; }}
     .note-text {{ color: #787878; font-size: 0.9rem; }}
-    @media only screen and (max-width: 768px) {{ .topbar-custom {{ font-size: 1.2rem; padding: 1em; text-align: center; }} }}
 </style>
 """, unsafe_allow_html=True)
 
 st.markdown("<div class='topbar-custom'>Ophthalmology AI Assistant</div>", unsafe_allow_html=True)
 
-# --- NEW, RE-ARCHITECTED APP FLOW ---
-
-# 1. Handle new user input
-user_prompt = None
-if st.session_state.voice_enabled:
-    user_prompt = speech_to_text(language=st.session_state.input_accent, use_container_width=True, just_once=True, key=f'STT_{len(st.session_state.chat_history)}')
+# --- Chat Interface ---
+if "user" in st.session_state.chat_history[-1:]:
+    is_processing = True
 else:
-    user_prompt = st.chat_input("Type your question here...")
+    is_processing = False
 
-if user_prompt and user_prompt.lower() != "undefined":
-    st.session_state.chat_history.append({"user": user_prompt})
-    # Get the AI response
-    with st.spinner("Thinking..."):
-        history_for_logic = st.session_state.chat_history[:-1]
-        answer, pdf_filename = handle_query_logic(user_prompt, history_for_logic, st.session_state.get("session_id"))
-        full_answer_html = f"{answer}<br><span class='note-text'>{disclaimer_text}</span>"
-        st.session_state.chat_history.append({"bot": full_answer_html, "pdf_filename": pdf_filename})
-
-# 2. Display the entire chat history
-for entry in st.session_state.chat_history:
-    role = "user" if "user" in entry else "bot"
+# Display chat history
+for message in st.session_state.chat_history:
+    role = "user" if "user" in message else "bot"
     with st.chat_message(role):
-        st.markdown(entry[role], unsafe_allow_html=True)
-        if role == "bot" and entry.get("pdf_filename"):
-            pdf_path = os.path.join(CHEATSHEET_PATH, entry["pdf_filename"])
+        st.markdown(message[role], unsafe_allow_html=True)
+        if role == 'bot' and 'pdf_filename' in message and message['pdf_filename']:
+            pdf_path = os.path.join(CHEATSHEET_PATH, message['pdf_filename'])
             if os.path.exists(pdf_path):
                 with open(pdf_path, "rb") as pdf_file:
-                    st.download_button("📥 Download Cheatsheet", pdf_file.read(), entry["pdf_filename"], "application/pdf", key=f"dl_{entry['pdf_filename']}_{uuid.uuid4()}")
+                    st.download_button("📥 Download Cheatsheet", pdf_file.read(), message['pdf_filename'], "application/pdf")
 
-# 3. Play audio for the last bot message if needed
-if st.session_state.chat_history and "bot" in st.session_state.chat_history[-1]:
-    if user_prompt and st.session_state.voice_enabled: # Only play audio for the newest response
-        answer = st.session_state.chat_history[-1]['bot']
-        clean_text = re.sub(r'<.*?>', '', answer) 
-        raw_answer_text = clean_text.replace('`', '').replace('*', '')
-        spoken_text = raw_answer_text + " Is there anything else I can help with?"
-        text_to_audio_autoplay(spoken_text, st.session_state.output_accent)
+# Handle new input
+if not is_processing:
+    user_prompt = None
+    if st.session_state.voice_enabled:
+        user_prompt = speech_to_text(language=st.session_state.input_accent, use_container_width=True, just_once=True, key=f'STT_{len(st.session_state.chat_history)}')
+    else:
+        user_prompt = st.chat_input("Type your question here...")
 
-# 4. Display the document uploader at the very end
+    if user_prompt and user_prompt.lower() != "undefined":
+        st.session_state.chat_history.append({"user": user_prompt})
+        st.rerun()
+
+# Process new prompt
+if is_processing:
+    user_message = st.session_state.chat_history[-1]
+    with st.chat_message("bot"):
+        with st.spinner("Thinking..."):
+            history_for_logic = st.session_state.chat_history[:-1]
+            answer = handle_query_logic(user_message["user"], history_for_logic, st.session_state.get("session_id"))
+            
+            pdf_filename = None
+            if "PDF_GENERATED::" in answer:
+                _, pdf_filename, answer_text = answer.split("::", 2)
+                answer = answer_text
+            
+            full_answer_html = f"{answer}<br><span class='note-text'>{disclaimer_text}</span>"
+            st.markdown(full_answer_html, unsafe_allow_html=True)
+            if pdf_filename:
+                pdf_path = os.path.join(CHEATSHEET_PATH, pdf_filename)
+                if os.path.exists(pdf_path):
+                    with open(pdf_path, "rb") as pdf_file:
+                        st.download_button("📥 Download Cheatsheet", pdf_file.read(), pdf_filename, "application/pdf")
+            
+            st.session_state.chat_history.append({"bot": full_answer_html, "pdf_filename": pdf_filename})
+            
+            if st.session_state.voice_enabled:
+                clean_text = re.sub(r'<.*?>', '', answer).replace('`', '').replace('*', '')
+                spoken_text = clean_text + " Is there anything else I can help with?"
+                text_to_audio_autoplay(spoken_text, st.session_state.output_accent)
+    st.rerun()
+
+# --- Document Upload Section ---
 st.divider()
 with st.expander("Upload a Custom Document"):
-    uploaded_file = st.file_uploader("Upload a PDF", type="pdf", key="pdf_uploader")
-    if uploaded_file:
-        if st.button("Process Document"):
-            with st.spinner("Processing document..."):
-                session_id = str(uuid.uuid4())
-                temp_dir = os.path.join(TEMP_STORAGE_PATH, session_id)
-                os.makedirs(temp_dir, exist_ok=True)
-                file_path = os.path.join(temp_dir, uploaded_file.name)
-                with open(file_path, "wb") as buffer: buffer.write(uploaded_file.getbuffer())
-                doc = fitz.open(file_path)
-                full_text = "".join(page.get_text() for page in doc)
-                doc.close()
-                texts = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=100).split_text(full_text)
-                FAISS.from_texts(texts, embeddings).save_local(temp_dir)
-                st.session_state.session_id = session_id
-                st.session_state.active_doc_name = uploaded_file.name
-                st.session_state.chat_history = [{"bot": f"Ready for questions about **{uploaded_file.name}**.<br><span class='note-text'>{disclaimer_text}</span>"}]
-                st.rerun()
+    uploaded_file = st.file_uploader("Upload a PDF", type="pdf")
+    if uploaded_file and st.button("Process Document"):
+        with st.spinner("Processing document..."):
+            session_id = str(uuid.uuid4())
+            temp_dir = os.path.join(TEMP_STORAGE_PATH, session_id)
+            os.makedirs(temp_dir, exist_ok=True)
+            file_path = os.path.join(temp_dir, uploaded_file.name)
+            with open(file_path, "wb") as f: f.write(uploaded_file.getbuffer())
+            
+            doc = fitz.open(file_path)
+            full_text = "".join(page.get_text() for page in doc)
+            doc.close()
+            texts = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=100).split_text(full_text)
+            FAISS.from_texts(texts, embeddings).save_local(temp_dir)
+            
+            st.session_state.session_id = session_id
+            st.session_state.active_doc_name = uploaded_file.name
+            st.session_state.chat_history = [{"bot": f"Ready for questions about **{uploaded_file.name}**.<br><span class='note-text'>{disclaimer_text}</span>"}]
+            st.rerun()
 
 if st.session_state.active_doc_name:
     st.info(f"Active Document: **{st.session_state['active_doc_name']}**")
     if st.button("Clear Document & Revert to Default"):
         st.session_state.session_id = None
         st.session_state.active_doc_name = None
-        st.session_state.chat_history.append({"bot": f"Reverted to default knowledge base.<br><span class='note-text'>{disclaimer_text}</span>"})
+        st.session_state.chat_history.append({"bot": "Reverted to default knowledge base."})
         st.rerun()
