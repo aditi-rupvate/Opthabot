@@ -16,9 +16,13 @@ from langchain.tools import StructuredTool
 from streamlit_mic_recorder import speech_to_text
 from langchain.memory import ConversationBufferMemory
 
-# --- NEW: Import Google Cloud Text-to-Speech ---
-from google.cloud import texttospeech
-from google.api_core import exceptions
+# Import Google Cloud Text-to-Speech and handle potential errors
+try:
+    from google.cloud import texttospeech
+    from google.api_core import exceptions
+    GCP_TTS_AVAILABLE = True
+except (ImportError, exceptions.DefaultCredentialsError):
+    GCP_TTS_AVAILABLE = False
 
 # --- 1. Configuration ---
 GOOGLE_API_KEY = st.secrets.get("GOOGLE_API_KEY", "YOUR_DEFAULT_API_KEY_HERE")
@@ -35,8 +39,12 @@ disclaimer_text = "— Note: This output is for academic purposes only and must 
 embeddings = GoogleGenerativeAIEmbeddings(model="models/embedding-001", google_api_key=GOOGLE_API_KEY)
 llm = ChatGoogleGenerativeAI(model="gemini-1.5-flash-latest", temperature=0.3, google_api_key=GOOGLE_API_KEY)
 
-# --- NEW: Human-like Text-to-Speech Function ---
+# --- Human-like Text-to-Speech Function (with Robust Error Handling) ---
 def text_to_audio_autoplay(text: str, voice_name: str, language_code: str):
+    if not GCP_TTS_AVAILABLE:
+        st.error("Google Cloud Text-to-Speech library not found or authentication failed. Please check your setup.")
+        return
+
     try:
         client = texttospeech.TextToSpeechClient()
         synthesis_input = texttospeech.SynthesisInput(text=text)
@@ -67,13 +75,12 @@ def text_to_audio_autoplay(text: str, voice_name: str, language_code: str):
             os.remove(audio_filename)
 
     except exceptions.PermissionDenied:
-        st.error("Google Cloud authentication failed. Please check your service account credentials and ensure the Text-to-Speech API is enabled.")
+        st.error("Authentication failed for Google Cloud Text-to-Speech. Please ensure your `GOOGLE_APPLICATION_CREDENTIALS` are set correctly and the API is enabled.")
     except Exception as e:
-        st.warning(f"Could not generate audio response: {e}")
+        st.error(f"An error occurred during voice generation: {e}")
 
 # --- PDF Generation (Unchanged) ---
 class PDF(FPDF):
-    # ... (rest of the class is unchanged)
     def __init__(self, topic, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self.topic = topic
@@ -89,7 +96,6 @@ class PDF(FPDF):
         self.cell(0, 10, f"Page {self.page_no()}/{{nb}}", 0, 0, 'C')
 
 def create_formatted_pdf(text_content: str, topic: str) -> str:
-    # ... (function is unchanged)
     pdf = PDF(topic)
     try:
         pdf.add_font("DejaVu", "", "DejaVuSans.ttf", uni=True)
@@ -141,10 +147,8 @@ def create_formatted_pdf(text_content: str, topic: str) -> str:
     pdf.output(filepath)
     return filename
 
-
 # --- Main Query Logic (Unchanged) ---
 def handle_query_logic(query: str, session_id: str = None):
-    # ... (function is unchanged)
     if session_id:
         temp_db_path = os.path.join(TEMP_STORAGE_PATH, session_id)
         if not os.path.exists(temp_db_path): return "Error: Your document session has expired.", None
@@ -215,7 +219,6 @@ def handle_query_logic(query: str, session_id: str = None):
                 except IndexError: pass
     return final_answer, pdf_filename
 
-
 # --- Streamlit UI ---
 st.set_page_config(layout="centered")
 
@@ -229,7 +232,6 @@ if "session_id" not in st.session_state: st.session_state.session_id = None
 if "active_doc_name" not in st.session_state: st.session_state.active_doc_name = None
 if "voice_enabled" not in st.session_state: st.session_state.voice_enabled = False
 if "input_accent" not in st.session_state: st.session_state.input_accent = 'en-US'
-# --- NEW: Session state for high-quality voice ---
 if "output_voice" not in st.session_state: st.session_state.output_voice = 'en-US-Standard-D'
 
 THEME = DARK if st.session_state.theme == "dark" else LIGHT
@@ -251,106 +253,3 @@ with st.sidebar:
         input_accent_options = {'American (US)': 'en-US', 'British (UK)': 'en-GB', 'Indian': 'en-IN'}
         selected_input_label = st.selectbox("Your Speaking Accent", options=list(input_accent_options.keys()))
         st.session_state.input_accent = input_accent_options[selected_input_label]
-        
-        # --- NEW: Dropdown for high-quality voices ---
-        output_voice_options = {
-            'US Male': 'en-US-Standard-D', 
-            'UK Female': 'en-GB-Standard-A',
-            'UK Male': 'en-GB-Standard-B',
-            'Australian Female': 'en-AU-Standard-C'
-        }
-        selected_output_label = st.selectbox("Assistant's Voice", options=list(output_voice_options.keys()))
-        st.session_state.output_voice = output_voice_options[selected_output_label]
-
-
-# --- UI Styling and Chat History (Unchanged) ---
-st.markdown(f"""
-<style>
-    .stApp {{ background: {THEME['bg']}; color: {THEME['text']}; }}
-    .topbar-custom {{ background: {THEME['bar']}; border-radius: 16px; padding: 1.3em 1.2em 1.15em 2.1em; margin-bottom: 1.6em; box-shadow: 0 2px 12px 0 rgba(44,46,66,0.06); font-size: 1.55rem; font-weight: 800; letter-spacing: .02em; }}
-    .msg-user {{ background: {THEME['user']}; color: {THEME['text']}; border-radius: 16px 16px 4px 20px; margin-bottom: 0.3em; padding: 1em 1.35em; width: fit-content; max-width: 85%; font-size: 1.13rem; border: 1.5px solid {THEME['border']}; margin-left: auto; margin-right: 0; text-align: right; box-shadow: 0 1px 12px 0 rgba(55,96,148,0.05); word-break: break-word; }}
-    .msg-bot {{ background: {THEME['bot']}; color: {THEME['text']}; border-radius: 16px 16px 20px 4px; margin-bottom: 0.7em; padding: 1.08em 1.23em 1em 1.18em; width: fit-content; max-width: 85%; font-size: 1.13rem; border: 1.5px solid {THEME['border']}; margin-right: auto; margin-left: 0; text-align: left; box-shadow: 0 1px 12px 0 rgba(44,46,66,0.05); word-break: break-word; }}
-    [data-testid="stExpander"] {{ border-color: {THEME['border']}; background: {THEME['expander']}; }}
-    .stButton>button, .stDownloadButton>button {{ border: 1px solid {THEME['border']}; }}
-    .note-text {{ color: #787878; font-size: 0.9rem; }}
-    @media only screen and (max-width: 768px) {{ .topbar-custom {{ font-size: 1.2rem; padding: 1em; text-align: center; }} .msg-user, .msg-bot {{ font-size: 0.95rem; max-width: 95%; }} }}
-</style>
-""", unsafe_allow_html=True)
-st.markdown("<div class='topbar-custom'>Ophthalmology AI Assistant</div>", unsafe_allow_html=True)
-for entry in st.session_state.chat_history:
-    if "user" in entry: st.markdown(f"<div class='msg-user'>{entry['user']}</div>", unsafe_allow_html=True)
-    else:
-        st.markdown(f"<div class='msg-bot'>{entry['bot']}</div>", unsafe_allow_html=True)
-        if entry.get("pdf_filename"):
-            pdf_path = os.path.join(CHEATSHEET_PATH, entry["pdf_filename"])
-            if os.path.exists(pdf_path):
-                with open(pdf_path, "rb") as pdf_file:
-                    st.download_button("📥 Download Cheatsheet", pdf_file.read(), entry["pdf_filename"], "application/pdf", key=f"dl_{entry['pdf_filename']}_{uuid.uuid4()}")
-with st.expander("Upload a Custom Document"):
-    # ... (unchanged)
-    uploaded_file = st.file_uploader("Upload a PDF", type="pdf")
-    if uploaded_file and st.button("Process Document"):
-        with st.spinner("Processing document..."):
-            session_id = str(uuid.uuid4())
-            temp_dir = os.path.join(TEMP_STORAGE_PATH, session_id)
-            os.makedirs(temp_dir, exist_ok=True)
-            file_path = os.path.join(temp_dir, uploaded_file.name)
-            with open(file_path, "wb") as buffer: buffer.write(uploaded_file.getbuffer())
-            doc = fitz.open(file_path)
-            full_text = "".join(page.get_text() for page in doc)
-            doc.close()
-            texts = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=100).split_text(full_text)
-            FAISS.from_texts(texts, embeddings).save_local(temp_dir)
-            st.session_state.session_id = session_id
-            st.session_state.active_doc_name = uploaded_file.name
-            st.session_state.chat_history.append({"bot": f"Ready for questions about **{uploaded_file.name}**.<br><span class='note-text'>{disclaimer_text}</span>"})
-            st.rerun()
-if st.session_state.active_doc_name:
-    # ... (unchanged)
-    st.info(f"Active Document: **{st.session_state['active_doc_name']}**")
-    if st.button("Clear Document & Revert to Default"):
-        st.session_state.session_id = None
-        st.session_state.active_doc_name = None
-        st.session_state.chat_history.append({"bot": f"Reverted to default knowledge base.<br><span class='note-text'>{disclaimer_text}</span>"})
-        st.rerun()
-
-
-# --- Voice and Text Input ---
-user_prompt = None
-if st.session_state.voice_enabled:
-    user_prompt = speech_to_text(language=st.session_state.input_accent, use_container_width=True, just_once=True, key='STT')
-else:
-    user_prompt = st.chat_input("Type your question here...")
-
-if user_prompt:
-    st.markdown(f"<div class='msg-user'>{user_prompt}</div>", unsafe_allow_html=True)
-    st.session_state.chat_history.append({"user": user_prompt})
-
-    with st.spinner("Thinking..."):
-        answer, pdf_filename = handle_query_logic(user_prompt, st.session_state.get("session_id"))
-        
-        # Clean the text for TTS by removing markdown and HTML
-        clean_text = re.sub(r'<.*?>', '', answer) 
-        raw_answer_text = clean_text.replace('`', '').replace('*', '')
-
-        full_answer_html = f"{answer}<br><span class='note-text'>{disclaimer_text}</span>"
-        
-        st.markdown(f"<div class='msg-bot'>{full_answer_html}</div>", unsafe_allow_html=True)
-
-        if st.session_state.voice_enabled:
-            # --- NEW: Add the follow-up phrase for voice mode ---
-            spoken_text = raw_answer_text + " Is there anything else I can help with?"
-            language_code = st.session_state.output_voice.split('-')[0] + '-' + st.session_state.output_voice.split('-')[1]
-            text_to_audio_autoplay(spoken_text, st.session_state.output_voice, language_code)
-
-        if pdf_filename:
-            # ... (unchanged)
-            pdf_path = os.path.join(CHEATSHEET_PATH, pdf_filename)
-            if os.path.exists(pdf_path):
-                with open(pdf_path, "rb") as pdf_file:
-                    st.download_button("📥 Download Cheatsheet", pdf_file.read(), pdf_filename, "application/pdf", key=f"dl_{pdf_filename}_{uuid.uuid4()}")
-
-
-        st.session_state.chat_history.append({"bot": full_answer_html, "pdf_filename": pdf_filename})
-        
-        # No st.rerun() here to allow audio to play fully
