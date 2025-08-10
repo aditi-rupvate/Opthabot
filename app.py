@@ -33,7 +33,7 @@ disclaimer_text = "— Note: This output is for academic purposes only and must 
 embeddings = GoogleGenerativeAIEmbeddings(model="models/embedding-001", google_api_key=GOOGLE_API_KEY)
 llm = ChatGoogleGenerativeAI(model="gemini-1.5-flash-latest", temperature=0.3, google_api_key=GOOGLE_API_KEY)
 
-# --- Text-to-Speech: returns base64 + we render with WebAudio/HTML ---
+# --- Text-to-Speech: mobile-safe (returns base64 + renders HTML audio) ---
 def text_to_audio_b64(text: str, tld: str) -> str | None:
     try:
         tts = gTTS(text=text, lang='en', tld=tld, slow=False)
@@ -51,52 +51,65 @@ def text_to_audio_b64(text: str, tld: str) -> str | None:
         st.warning(f"Could not generate audio response: {e}")
         return None
 
-# --- GLOBAL: enable autoplay after first user gesture (tap/click/keydown) ---
-def enable_autoplay_globally():
+# --- Global device detector + AudioContext unlocker (runs once) ---
+def enable_device_detection_and_autoplay_unlock():
     st.markdown("""
     <script>
     (function(){
-      if (window._ttsUnlockInstalled) return;
-      window._ttsUnlockInstalled = true;
-
-      const AC = window.AudioContext || window.webkitAudioContext;
-      function unlock(){
-        try{
-          if (!AC) return;
-          // create or reuse shared context
-          window._ttsCtx = window._ttsCtx || new AC();
-          if (window._ttsCtx.state !== 'running') {
-            window._ttsCtx.resume();
-          }
-          // Prime with tiny silence to keep context "hot" on iOS
-          const ctx = window._ttsCtx;
-          const buf = ctx.createBuffer(1, 22050, 44100);
-          const src = ctx.createBufferSource();
-          src.buffer = buf; src.connect(ctx.destination); src.start(0);
-
-          window._ttsUnlocked = true;
-        }catch(e){}
-        document.removeEventListener('pointerdown', unlock, true);
-        document.removeEventListener('touchstart', unlock, true);
-        document.removeEventListener('click', unlock, true);
-        document.removeEventListener('keydown', unlock, true);
+      // ----- Device/Browser detection -----
+      if (!window._devProfile){
+        const ua = navigator.userAgent || navigator.vendor || window.opera || "";
+        const isIOS = /iPad|iPhone|iPod/.test(ua) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+        const isAndroid = /Android/.test(ua);
+        const isChrome = /Chrome/.test(ua) && !/Edge|Edg|OPR|Opera/.test(ua);
+        const isSafari = /Safari/.test(ua) && !/Chrome|CriOS|Edg|OPR|Opera/.test(ua);
+        const isDesktop = !isIOS && !isAndroid;
+        window._devProfile = { isIOS, isAndroid, isChrome, isSafari, isDesktop };
       }
 
-      // Any first gesture unlocks the shared AudioContext for the whole session
-      document.addEventListener('pointerdown', unlock, true);
-      document.addEventListener('touchstart', unlock, true);
-      document.addEventListener('click', unlock, true);
-      document.addEventListener('keydown', unlock, true);
+      // ----- One-time AudioContext unlock on first user gesture -----
+      if (!window._ttsUnlockInstalled){
+        window._ttsUnlockInstalled = true;
+        const AC = window.AudioContext || window.webkitAudioContext;
+
+        async function unlock(){
+          try{
+            if (!AC) return;
+            window._ttsCtx = window._ttsCtx || new AC();
+            if (window._ttsCtx.state !== 'running'){
+              try { await window._ttsCtx.resume(); } catch(e){}
+            }
+            // Prime with tiny silence to keep iOS context "hot"
+            try {
+              const ctx = window._ttsCtx;
+              const buf = ctx.createBuffer(1, 22050, 44100);
+              const src = ctx.createBufferSource();
+              src.buffer = buf; src.connect(ctx.destination); src.start(0);
+            } catch(e){}
+            window._ttsUnlocked = true;
+          } catch(e){}
+          document.removeEventListener('pointerdown', unlock, true);
+          document.removeEventListener('touchstart', unlock, true);
+          document.removeEventListener('click', unlock, true);
+          document.removeEventListener('keydown', unlock, true);
+        }
+
+        document.addEventListener('pointerdown', unlock, true);
+        document.addEventListener('touchstart', unlock, true);
+        document.addEventListener('click', unlock, true);
+        document.addEventListener('keydown', unlock, true);
+      }
     })();
     </script>
     """, unsafe_allow_html=True)
 
 def render_audio_player_b64(audio_b64: str):
     """
-    Autoplay strategy:
-      - If a shared AudioContext is unlocked, play immediately via WebAudio (true autoplay).
-      - If not yet unlocked, try HTML muted->unmute autoplay.
-      - If blocked, show a visible <audio> and a big "Tap to play" button (one-time gesture).
+    Device-aware autoplay:
+      - iOS Safari: needs prior gesture; if not unlocked, show button and attach gesture -> WebAudio.
+      - Android Chrome: try HTML muted autoplay -> unmute; else button.
+      - Desktop: try WebAudio first; fall back to HTML + button.
+    After FIRST real gesture in the session, WebAudio lets subsequent replies autoplay.
     """
     wrap_id = f"wrap_{uuid.uuid4().hex}"
     audio_id = f"audio_{uuid.uuid4().hex}"
@@ -105,7 +118,6 @@ def render_audio_player_b64(audio_b64: str):
 
     st.markdown(f"""
     <style>
-      /* Floating UI for audio + fallback button */
       #{wrap_id} {{
         position: fixed; left: 12px; right: 12px; bottom: 12px; z-index: 999999;
       }}
@@ -135,7 +147,6 @@ def render_audio_player_b64(audio_b64: str):
     (function(){{
       const a = document.getElementById("{audio_id}");
       const btn = document.getElementById("{btn_id}");
-      const base64 = "{audio_b64}";
 
       // Stop any earlier audios we injected
       document.querySelectorAll('audio[id^="audio_"]').forEach(el => {{ if (el !== a) try{{el.pause()}}catch(e){{}} }});
@@ -146,7 +157,7 @@ def render_audio_player_b64(audio_b64: str):
         return bytes.buffer;
       }}
 
-      async function playViaWebAudio(){{
+      async function playViaWebAudio(base64){{
         const AC = window.AudioContext || window.webkitAudioContext;
         if (!AC) throw new Error("No AudioContext");
         const ctx = window._ttsCtx || new AC(); window._ttsCtx = ctx;
@@ -154,15 +165,11 @@ def render_audio_player_b64(audio_b64: str):
         const buf = await new Promise((res, rej) => {{
           try {{ ctx.decodeAudioData(b64ToBytes(base64), res, rej); }} catch(e) {{ rej(e); }}
         }});
-        const src = ctx.createBufferSource(); src.buffer = buf; src.connect(ctx.destination); src.start(0);
+        const src = ctx.createBufferSource();
+        src.buffer = buf; src.connect(ctx.destination); src.start(0);
       }}
 
-      async function tryAutoplay(){{
-        // If unlocked, WebAudio is instant (true autoplay)
-        if (window._ttsUnlocked) {{
-          try {{ await playViaWebAudio(); return true; }} catch(e) {{}}
-        }}
-        // Otherwise, try HTML muted autoplay
+      async function tryHtmlMutedAutoplay(){{
         try {{
           a.currentTime = 0; a.volume = 1.0; a.muted = true;
           await a.play();
@@ -173,19 +180,25 @@ def render_audio_player_b64(audio_b64: str):
         }}
       }}
 
-      function attachGestureUnlock(){{
+      function attachGestureUnlock(strategy){{  // 'webaudio' | 'html'
         btn.style.display = "inline-block";
         const unlock = async () => {{
           try {{
-            // Resume global context and prefer WebAudio playback
-            const AC = window.AudioContext || window.webkitAudioContext;
-            if (AC) {{
-              const ctx = window._ttsCtx || new AC(); window._ttsCtx = ctx;
-              if (ctx.state !== 'running') {{ try{{ await ctx.resume(); }}catch(e){{}} }}
-              window._ttsUnlocked = (ctx.state === 'running');
-            }}
-            if (window._ttsUnlocked) {{
-              await playViaWebAudio();
+            if (strategy === 'webaudio'){{
+              // Ensure global AC is running
+              const AC = window.AudioContext || window.webkitAudioContext;
+              if (AC){{
+                const ctx = window._ttsCtx || new AC(); window._ttsCtx = ctx;
+                if (ctx.state !== 'running'){{ try{{ await ctx.resume(); }}catch(e){{}} }}
+                window._ttsUnlocked = (ctx.state === 'running');
+              }}
+              if (window._ttsUnlocked) {{
+                const srcEl = document.querySelector("#{audio_id} source");
+                const base64 = (srcEl && srcEl.src || "").split(",")[1] || "";
+                await playViaWebAudio(base64);
+              }} else {{
+                await a.play();
+              }}
             }} else {{
               await a.play();
             }}
@@ -203,10 +216,47 @@ def render_audio_player_b64(audio_b64: str):
         btn.addEventListener('click', (e)=>{{ e.preventDefault(); unlock(); }}, {{ once: true }});
       }}
 
-      (async function run(){{
-        const ok = await tryAutoplay();
-        if (!ok) attachGestureUnlock();
-      }})();
+      async function run(){{
+        const dp = window._devProfile || {{isIOS:false,isAndroid:false,isDesktop:true,isSafari:false,isChrome:true}};
+        // Prefer WebAudio if already unlocked (true autoplay across all)
+        if (window._ttsUnlocked) {{
+          try {{
+            const srcEl = document.querySelector("#{audio_id} source");
+            const base64 = (srcEl && srcEl.src || "").split(",")[1] || "";
+            await playViaWebAudio(base64);
+            return;
+          }} catch(e) {{}}
+        }}
+
+        if (dp.isIOS && dp.isSafari){{
+          // iOS Safari: generally blocks HTML autoplay; wait for gesture -> WebAudio
+          attachGestureUnlock('webaudio');
+          return;
+        }}
+
+        if (dp.isAndroid && dp.isChrome){{
+          // Android Chrome: try muted HTML autoplay then unmute
+          const ok = await tryHtmlMutedAutoplay();
+          if (!ok) attachGestureUnlock('html');
+          return;
+        }}
+
+        // Desktop or other cases: try WebAudio; if not allowed yet, show gesture unlock
+        try {{
+          const srcEl = document.querySelector("#{audio_id} source");
+          const base64 = (srcEl && srcEl.src || "").split(",")[1] || "";
+          await playViaWebAudio(base64);
+        }} catch(e) {{
+          const ok = await tryHtmlMutedAutoplay();
+          if (!ok) attachGestureUnlock('webaudio');
+        }}
+      }}
+
+      if (document.readyState === "complete" || document.readyState === "interactive") {{
+        run();
+      }} else {{
+        document.addEventListener("DOMContentLoaded", run, {{ once: true }});
+      }}
     }})();
     </script>
     """, unsafe_allow_html=True)
@@ -366,11 +416,12 @@ def handle_query_logic(query: str, session_id: str = None):
 
 # --- Streamlit UI ---
 st.set_page_config(layout="centered")
-# IMPORTANT: enable autoplay unlock ASAP (first tap will unlock audio globally)
-enable_autoplay_globally()
+
+# Install device detection + autoplay unlock ASAP (so first tap unlocks session)
+enable_device_detection_and_autoplay_unlock()
 
 LIGHT = {"bg": "#f8fafb", "bar": "#fff", "bot": "#e9eef6", "user": "#d1e7dd", "text": "#191b22", "input": "#e8edf2", "border": "#d4dde7", "expander": "#f4f7fb"}
-DARK  = {"bg": "#18181c", "bar": "#202126", "bot": "#232733", "user": "#22577a", "text": "#f3f5f8", "input": "#242730", "border": "#26282f", "expander": "#24272e"}
+DARK = {"bg": "#18181c", "bar": "#202126", "bot": "#232733", "user": "#22577a", "text": "#f3f5f8", "input": "#242730", "border": "#26282f", "expander": "#24272e"}
 
 # Initialize session state variables
 if "theme" not in st.session_state: st.session_state.theme = "dark"
@@ -380,12 +431,12 @@ if "active_doc_name" not in st.session_state: st.session_state.active_doc_name =
 if "voice_enabled" not in st.session_state: st.session_state.voice_enabled = False
 if "input_accent" not in st.session_state: st.session_state.input_accent = 'en-US'
 if "output_accent" not in st.session_state: st.session_state.output_accent = 'com'
-# Added session_started flag
+# --- FIX: Added session_started flag ---
 if "session_started" not in st.session_state: st.session_state.session_started = False
 
 THEME = DARK if st.session_state.theme == "dark" else LIGHT
 
-# --- Initial interaction gate ---
+# --- FIX: "Initial Interaction" Gate ---
 if not st.session_state.session_started:
     st.markdown("<br><br>", unsafe_allow_html=True)
     st.title("Ophthalmology AI Assistant")
@@ -393,7 +444,7 @@ if not st.session_state.session_started:
     st.markdown("This one-time action enables voice features on mobile devices.")
     if st.button("Start Session", use_container_width=True, type="primary"):
         st.session_state.session_started = True
-        # DO NOT call st.rerun() here; Streamlit will rerun automatically
+        # IMPORTANT: do NOT st.rerun() here; Streamlit auto-reruns after button click
 else:
     # --- Main Application UI ---
     with st.sidebar:
@@ -430,7 +481,7 @@ else:
         .stApp {{ background: {THEME['bg']}; color: {THEME['text']}; }}
         .topbar-custom {{ background: {THEME['bar']}; border-radius: 16px; padding: 1.3em 1.2em 1.15em 2.1em; margin-bottom: 1.6em; box-shadow: 0 2px 12px 0 rgba(44,46,66,0.06); font-size: 1.55rem; font-weight: 800; letter-spacing: .02em; }}
         .msg-user {{ background: {THEME['user']}; color: {THEME['text']}; border-radius: 16px 16px 4px 20px; margin-bottom: 0.3em; padding: 1em 1.35em; width: fit-content; max-width: 85%; font-size: 1.13rem; border: 1.5px solid {THEME['border']}; margin-left: auto; margin-right: 0; text-align: right; box-shadow: 0 1px 12px 0 rgba(55,96,148,0.05); word-break: break-word; }}
-        .msg-bot {{ background: {THEME['bot']}; color: {THEME['text']}; border-radius: 16px 16px 20px 4px; margin-bottom: 0.7em; padding: 1.08em 1.23em 1em 1.18em; width: fit-content; max-width: 85%; font-size: 1.13rem; border: 1.5px solid {THEME['border']}; margin-right: auto; margin-left: 0; text-align: left; box-shadow: 0 1px 12px 0 rgba(44,46,66,0.05); }}
+        .msg-bot {{ background: {THEME['bot']}; color: {THEME['text']}; border-radius: 16px 16px 20px 4px; margin-bottom: 0.7em; padding: 1.08em 1.23em 1em 1.18em; width: fit-content; max-width: 85%; font-size: 1.13rem; border: 1.5px solid {THEME['border']}; margin-right: auto; margin-left: 0; text-align: left; box-shadow: 0 1px 12px 0 rgba(44,46,66,0.05); word-break: break-word; }}
         [data-testid="stExpander"] {{ border-color: {THEME['border']}; background: {THEME['expander']}; }}
         .stButton>button, .stDownloadButton>button {{ border: 1px solid {THEME['border']}; }}
         .note-text {{ color: #787878; font-size: 0.9rem; }}
@@ -486,8 +537,7 @@ else:
 
         with st.spinner("Thinking..."):
             answer, pdf_filename = handle_query_logic(user_prompt, st.session_state.get("session_id"))
-            clean_text = re.sub(r'<.*?>', '', answer)
-            raw_answer_text = clean_text.replace('`', '').replace('*', '')
+            clean_text = re.sub(r'<.*?>', '', answer); raw_answer_text = clean_text.replace('`', '').replace('*', '')
             full_answer_html = f"{answer}<br><span class='note-text'>{disclaimer_text}</span>"
             
             st.markdown(f"<div class='msg-bot'>{full_answer_html}</div>", unsafe_allow_html=True)
