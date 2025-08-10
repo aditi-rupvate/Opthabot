@@ -43,8 +43,7 @@ def text_to_audio_autoplay(text: str, tld: str):
             audio_bytes = audio_file.read()
             st.audio(audio_bytes, format="audio/mp3", autoplay=True)
         
-        # Delay to ensure the browser has time to buffer and play the audio
-        time.sleep(2) 
+        time.sleep(2)
         
         if os.path.exists(audio_filename):
             os.remove(audio_filename)
@@ -292,14 +291,14 @@ if st.session_state.voice_enabled:
 else:
     user_prompt = st.chat_input("Type your question here...")
 
-if user_prompt:
+# --- FIX: Check for and ignore the 'undefined' artifact from the voice component ---
+if user_prompt and user_prompt.lower() != "undefined":
     st.markdown(f"<div class='msg-user'>{user_prompt}</div>", unsafe_allow_html=True)
     st.session_state.chat_history.append({"user": user_prompt})
 
     with st.spinner("Thinking..."):
         answer, pdf_filename = handle_query_logic(user_prompt, st.session_state.get("session_id"))
         
-        # Clean the text for TTS by removing HTML tags and markdown characters
         clean_text = re.sub(r'<.*?>', '', answer) 
         raw_answer_text = clean_text.replace('`', '').replace('*', '')
 
@@ -308,7 +307,6 @@ if user_prompt:
         st.markdown(f"<div class='msg-bot'>{full_answer_html}</div>", unsafe_allow_html=True)
 
         if st.session_state.voice_enabled:
-            # Add the follow-up phrase for a more natural conversation
             spoken_text = raw_answer_text + " Is there anything else I can help with?"
             text_to_audio_autoplay(spoken_text, st.session_state.output_accent)
 
@@ -319,6 +317,3 @@ if user_prompt:
                     st.download_button("📥 Download Cheatsheet", pdf_file.read(), pdf_filename, "application/pdf", key=f"dl_{pdf_filename}_{uuid.uuid4()}")
 
         st.session_state.chat_history.append({"bot": full_answer_html, "pdf_filename": pdf_filename})
-        
-        # We do not rerun here to allow the audio to play fully.
-        # The user can click the microphone again for a new query.
