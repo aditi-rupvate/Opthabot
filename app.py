@@ -3,6 +3,7 @@ import re
 import uuid
 import time
 import base64
+import json
 import streamlit as st
 from fpdf import FPDF
 import fitz # PyMuPDF
@@ -33,7 +34,7 @@ disclaimer_text = "— Note: This output is for academic purposes only and must 
 embeddings = GoogleGenerativeAIEmbeddings(model="models/embedding-001", google_api_key=GOOGLE_API_KEY)
 llm = ChatGoogleGenerativeAI(model="gemini-1.5-flash-latest", temperature=0.3, google_api_key=GOOGLE_API_KEY)
 
-# --- Text-to-Speech: mobile-safe (returns base64 + renders HTML audio) ---
+# --- Text-to-Speech: file -> base64 ---
 def text_to_audio_b64(text: str, tld: str) -> str | None:
     try:
         tts = gTTS(text=text, lang='en', tld=tld, slow=False)
@@ -51,12 +52,12 @@ def text_to_audio_b64(text: str, tld: str) -> str | None:
         st.warning(f"Could not generate audio response: {e}")
         return None
 
-# --- Global device detector + AudioContext unlocker (runs once) ---
+# --- Global device detection + one-time AudioContext unlock ---
 def enable_device_detection_and_autoplay_unlock():
     st.markdown("""
     <script>
     (function(){
-      // ----- Device/Browser detection -----
+      // Device/browser fingerprint
       if (!window._devProfile){
         const ua = navigator.userAgent || navigator.vendor || window.opera || "";
         const isIOS = /iPad|iPhone|iPod/.test(ua) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
@@ -67,7 +68,7 @@ def enable_device_detection_and_autoplay_unlock():
         window._devProfile = { isIOS, isAndroid, isChrome, isSafari, isDesktop };
       }
 
-      // ----- One-time AudioContext unlock on first user gesture -----
+      // One-time AudioContext unlock on first gesture
       if (!window._ttsUnlockInstalled){
         window._ttsUnlockInstalled = true;
         const AC = window.AudioContext || window.webkitAudioContext;
@@ -79,7 +80,7 @@ def enable_device_detection_and_autoplay_unlock():
             if (window._ttsCtx.state !== 'running'){
               try { await window._ttsCtx.resume(); } catch(e){}
             }
-            // Prime with tiny silence to keep iOS context "hot"
+            // Prime with tiny silence so iOS keeps context alive
             try {
               const ctx = window._ttsCtx;
               const buf = ctx.createBuffer(1, 22050, 44100);
@@ -87,7 +88,7 @@ def enable_device_detection_and_autoplay_unlock():
               src.buffer = buf; src.connect(ctx.destination); src.start(0);
             } catch(e){}
             window._ttsUnlocked = true;
-          } catch(e){}
+          }catch(e){}
           document.removeEventListener('pointerdown', unlock, true);
           document.removeEventListener('touchstart', unlock, true);
           document.removeEventListener('click', unlock, true);
@@ -103,18 +104,19 @@ def enable_device_detection_and_autoplay_unlock():
     </script>
     """, unsafe_allow_html=True)
 
-def render_audio_player_b64(audio_b64: str):
+def render_speech(spoken_text: str, audio_b64: str):
     """
-    Device-aware autoplay:
-      - iOS Safari: needs prior gesture; if not unlocked, show button and attach gesture -> WebAudio.
-      - Android Chrome: try HTML muted autoplay -> unmute; else button.
-      - Desktop: try WebAudio first; fall back to HTML + button.
-    After FIRST real gesture in the session, WebAudio lets subsequent replies autoplay.
+    Cross-device speech with layered fallbacks:
+      1) WebAudio (true autoplay once unlocked)
+      2) HTMLAudio muted->unmute
+      3) Web Speech API (speechSynthesis) if media playback still blocked
+    A visible audio bar + "Tap to play" button is always provided as last resort.
     """
     wrap_id = f"wrap_{uuid.uuid4().hex}"
     audio_id = f"audio_{uuid.uuid4().hex}"
     btn_id = f"btn_{uuid.uuid4().hex}"
-    data_url = f"data:audio/mpeg;base64,{audio_b64}"
+
+    js_text = json.dumps(spoken_text)  # safe escaping for JS
 
     st.markdown(f"""
     <style>
@@ -136,8 +138,9 @@ def render_audio_player_b64(audio_b64: str):
 
     <div id="{wrap_id}">
       <div class="bar">
-        <audio id="{audio_id}" preload="auto" playsinline controls src="{data_url}">
-          <source src="{data_url}" type="audio/mpeg">
+        <audio id="{audio_id}" preload="auto" playsinline controls
+               src="data:audio/mpeg;base64,{audio_b64}">
+          <source src="data:audio/mpeg;base64,{audio_b64}" type="audio/mpeg">
         </audio>
         <button id="{btn_id}" aria-label="Tap to play">🔊 Tap to play</button>
       </div>
@@ -145,28 +148,47 @@ def render_audio_player_b64(audio_b64: str):
 
     <script>
     (function(){{
+      const spokenText = {js_text};
       const a = document.getElementById("{audio_id}");
       const btn = document.getElementById("{btn_id}");
+      const dev = window._devProfile || {{isIOS:false,isAndroid:false,isDesktop:true,isSafari:false,isChrome:true}};
 
-      // Stop any earlier audios we injected
+      // Pause older injected audios to avoid overlap
       document.querySelectorAll('audio[id^="audio_"]').forEach(el => {{ if (el !== a) try{{el.pause()}}catch(e){{}} }});
 
       function b64ToBytes(b64){{
-        const bin = atob(b64), len = bin.length, bytes = new Uint8Array(len);
-        for (let i=0;i<len;i++) bytes[i] = bin.charCodeAt(i);
-        return bytes.buffer;
+        try {{
+          const bin = atob(b64);
+          const len = bin.length;
+          const bytes = new Uint8Array(len);
+          for (let i=0;i<len;i++) bytes[i] = bin.charCodeAt(i);
+          return bytes.buffer;
+        }} catch(e) {{
+          return null;
+        }}
       }}
 
-      async function playViaWebAudio(base64){{
+      async function playViaWebAudioFromBase64(b64){{
         const AC = window.AudioContext || window.webkitAudioContext;
         if (!AC) throw new Error("No AudioContext");
         const ctx = window._ttsCtx || new AC(); window._ttsCtx = ctx;
         if (ctx.state !== 'running') {{ try{{ await ctx.resume(); }}catch(e){{}} }}
+        const arrBuf = b64ToBytes(b64);
+        if (!arrBuf) throw new Error("Base64 decode failed");
         const buf = await new Promise((res, rej) => {{
-          try {{ ctx.decodeAudioData(b64ToBytes(base64), res, rej); }} catch(e) {{ rej(e); }}
+          try {{ ctx.decodeAudioData(arrBuf, res, rej); }} catch(e) {{ rej(e); }}
         }});
-        const src = ctx.createBufferSource();
-        src.buffer = buf; src.connect(ctx.destination); src.start(0);
+        const src = ctx.createBufferSource(); src.buffer = buf; src.connect(ctx.destination); src.start(0);
+      }}
+
+      async function tryWebAudioAutoplay(){{
+        try {{
+          const src = a.currentSrc || a.src || "";
+          const b64 = src.split(",")[1] || "";
+          if (!b64) throw new Error("no b64");
+          await playViaWebAudioFromBase64(b64);
+          return true;
+        }} catch(e) {{ return false; }}
       }}
 
       async function tryHtmlMutedAutoplay(){{
@@ -175,32 +197,69 @@ def render_audio_player_b64(audio_b64: str):
           await a.play();
           setTimeout(()=>{{ try{{ a.muted = false; }}catch(e){{}} }}, 80);
           return true;
-        }} catch(e) {{
-          return false;
-        }}
+        }} catch(e) {{ return false; }}
       }}
 
-      function attachGestureUnlock(strategy){{  // 'webaudio' | 'html'
+      function chooseVoice(voices){{
+        if (!voices || !voices.length) return null;
+        // Prefer an English voice
+        const preferred = voices.find(v => /en-GB|en_US|en-/.test(v.lang)) || voices[0];
+        return preferred;
+      }}
+
+      async function trySpeechSynthesis(){{
+        try {{
+          const ss = window.speechSynthesis;
+          if (!ss) throw new Error("no speechSynthesis");
+          ss.cancel();
+          const u = new SpeechSynthesisUtterance(spokenText);
+          const setAndSpeak = () => {{
+            const voice = chooseVoice(ss.getVoices());
+            if (voice) u.voice = voice;
+            u.rate = 1.0; u.pitch = 1.0; u.volume = 1.0;
+            ss.speak(u);
+          }};
+          if (!ss.getVoices().length) {{
+            return new Promise((resolve) => {{
+              const once = () => {{
+                try {{ setAndSpeak(); }} catch(e) {{}}
+                ss.removeEventListener('voiceschanged', once);
+                resolve(true);
+              }};
+              ss.addEventListener('voiceschanged', once);
+              // Fallback in case event never fires
+              setTimeout(() => {{ try {{ setAndSpeak(); resolve(true); }} catch(e) {{ resolve(false); }} }}, 400);
+            }});
+          }} else {{
+            setAndSpeak();
+            return true;
+          }}
+        }} catch(e) {{ return false; }}
+      }}
+
+      function attachGesture(strategy){{ // 'webaudio' | 'html' | 'speech'
         btn.style.display = "inline-block";
         const unlock = async () => {{
           try {{
-            if (strategy === 'webaudio'){{
-              // Ensure global AC is running
+            if (strategy === 'webaudio') {{
+              // Ensure global context is running
               const AC = window.AudioContext || window.webkitAudioContext;
-              if (AC){{
+              if (AC) {{
                 const ctx = window._ttsCtx || new AC(); window._ttsCtx = ctx;
-                if (ctx.state !== 'running'){{ try{{ await ctx.resume(); }}catch(e){{}} }}
+                if (ctx.state !== 'running') {{ try {{ await ctx.resume(); }} catch(e) {{}} }}
                 window._ttsUnlocked = (ctx.state === 'running');
               }}
               if (window._ttsUnlocked) {{
-                const srcEl = document.querySelector("#{audio_id} source");
-                const base64 = (srcEl && srcEl.src || "").split(",")[1] || "";
-                await playViaWebAudio(base64);
+                const src = a.currentSrc || a.src || "";
+                const b64 = src.split(",")[1] || "";
+                await playViaWebAudioFromBase64(b64);
               }} else {{
                 await a.play();
               }}
-            }} else {{
+            }} else if (strategy === 'html') {{
               await a.play();
+            }} else {{
+              await trySpeechSynthesis();
             }}
           }} catch(e) {{}}
           btn.style.display = "none";
@@ -217,39 +276,35 @@ def render_audio_player_b64(audio_b64: str):
       }}
 
       async function run(){{
-        const dp = window._devProfile || {{isIOS:false,isAndroid:false,isDesktop:true,isSafari:false,isChrome:true}};
-        // Prefer WebAudio if already unlocked (true autoplay across all)
-        if (window._ttsUnlocked) {{
-          try {{
-            const srcEl = document.querySelector("#{audio_id} source");
-            const base64 = (srcEl && srcEl.src || "").split(",")[1] || "";
-            await playViaWebAudio(base64);
-            return;
-          }} catch(e) {{}}
-        }}
-
-        if (dp.isIOS && dp.isSafari){{
-          // iOS Safari: generally blocks HTML autoplay; wait for gesture -> WebAudio
-          attachGestureUnlock('webaudio');
+        // If a shared AudioContext is unlocked, WebAudio should autoplay across platforms
+        if (window._ttsUnlocked){{
+          if (await tryWebAudioAutoplay()) return;
+          if (await tryHtmlMutedAutoplay()) return;
+          if (await trySpeechSynthesis()) return;
+          attachGesture('webaudio');
           return;
         }}
 
-        if (dp.isAndroid && dp.isChrome){{
-          // Android Chrome: try muted HTML autoplay then unmute
-          const ok = await tryHtmlMutedAutoplay();
-          if (!ok) attachGestureUnlock('html');
+        // Strategy by platform before unlock
+        if (dev.isIOS && dev.isSafari){{
+          // iOS Safari almost always needs a gesture: show button, then WebAudio
+          attachGesture('webaudio');
           return;
         }}
 
-        // Desktop or other cases: try WebAudio; if not allowed yet, show gesture unlock
-        try {{
-          const srcEl = document.querySelector("#{audio_id} source");
-          const base64 = (srcEl && srcEl.src || "").split(",")[1] || "";
-          await playViaWebAudio(base64);
-        }} catch(e) {{
+        if (dev.isAndroid && dev.isChrome){{
+          // Android Chrome: try muted HTML -> unmute
           const ok = await tryHtmlMutedAutoplay();
-          if (!ok) attachGestureUnlock('webaudio');
+          if (ok) return;
+          attachGesture('html');
+          return;
         }}
+
+        // Desktop or others: try WebAudio first, then HTML, then speech
+        if (await tryWebAudioAutoplay()) return;
+        if (await tryHtmlMutedAutoplay()) return;
+        if (await trySpeechSynthesis()) return;
+        attachGesture('webaudio');
       }}
 
       if (document.readyState === "complete" || document.readyState === "interactive") {{
@@ -299,7 +354,7 @@ def create_formatted_pdf(text_content: str, topic: str) -> str:
     pdf.ln(10)
     line_height = 7
     pdf.set_text_color(50, 50, 50)
-    for line in text_content.split('\n'):
+    for line in text_content.split('\\n'):
         line = line.strip()
         if not line:
             continue
@@ -325,7 +380,7 @@ def create_formatted_pdf(text_content: str, topic: str) -> str:
     pdf.set_font("DejaVu", "", 8)
     pdf.set_text_color(120, 120, 120)
     pdf.multi_cell(0, 6, "Note: This content is for academic purposes only and must not be used for clinical diagnosis.")
-    clean_topic = re.sub(r'[\W_]+', '_', topic).lower()
+    clean_topic = re.sub(r'[\\W_]+', '_', topic).lower()
     filename = f"{clean_topic}_cheatsheet.pdf"
     filepath = os.path.join(CHEATSHEET_PATH, filename)
     pdf.output(filepath)
@@ -350,17 +405,17 @@ def handle_query_logic(query: str, session_id: str = None):
         return chain.invoke(query)['result']
 
     def concept_explainer_func(topic: str) -> str:
-        context = "\n\n".join([doc.page_content for doc in retriever.get_relevant_documents(topic)])
+        context = "\\n\\n".join([doc.page_content for doc in retriever.get_relevant_documents(topic)])
         prompt_template = PromptTemplate.from_template(
-            "Provide a comprehensive explanation or summary for {topic}.\n\nContext: {context}\nResponse:"
+            "Provide a comprehensive explanation or summary for {topic}.\\n\\nContext: {context}\\nResponse:"
         )
         chain = LLMChain(llm=llm, prompt=prompt_template)
         return chain.run(topic=topic, context=context)
 
     def cheatsheet_generator_func(topic: str) -> str:
-        context = "\n\n".join([doc.page_content for doc in retriever.get_relevant_documents(topic)])
+        context = "\\n\\n".join([doc.page_content for doc in retriever.get_relevant_documents(topic)])
         prompt_template = PromptTemplate.from_template(
-            "Create a detailed cheat sheet for {topic} using '##' for headings and '-' for list items.\nContext: {context}\nCheat Sheet:"
+            "Create a detailed cheat sheet for {topic} using '##' for headings and '-' for list items.\\nContext: {context}\\nCheat Sheet:"
         )
         chain = LLMChain(llm=llm, prompt=prompt_template)
         cheatsheet_text = chain.run(topic=topic, context=context)
@@ -431,12 +486,12 @@ if "active_doc_name" not in st.session_state: st.session_state.active_doc_name =
 if "voice_enabled" not in st.session_state: st.session_state.voice_enabled = False
 if "input_accent" not in st.session_state: st.session_state.input_accent = 'en-US'
 if "output_accent" not in st.session_state: st.session_state.output_accent = 'com'
-# --- FIX: Added session_started flag ---
+# Added session_started flag
 if "session_started" not in st.session_state: st.session_state.session_started = False
 
 THEME = DARK if st.session_state.theme == "dark" else LIGHT
 
-# --- FIX: "Initial Interaction" Gate ---
+# --- Initial interaction gate ---
 if not st.session_state.session_started:
     st.markdown("<br><br>", unsafe_allow_html=True)
     st.title("Ophthalmology AI Assistant")
@@ -444,7 +499,7 @@ if not st.session_state.session_started:
     st.markdown("This one-time action enables voice features on mobile devices.")
     if st.button("Start Session", use_container_width=True, type="primary"):
         st.session_state.session_started = True
-        # IMPORTANT: do NOT st.rerun() here; Streamlit auto-reruns after button click
+        # Do NOT call st.rerun() here; Streamlit reruns automatically
 else:
     # --- Main Application UI ---
     with st.sidebar:
@@ -537,7 +592,8 @@ else:
 
         with st.spinner("Thinking..."):
             answer, pdf_filename = handle_query_logic(user_prompt, st.session_state.get("session_id"))
-            clean_text = re.sub(r'<.*?>', '', answer); raw_answer_text = clean_text.replace('`', '').replace('*', '')
+            clean_text = re.sub(r'<.*?>', '', answer)
+            raw_answer_text = clean_text.replace('`', '').replace('*', '')
             full_answer_html = f"{answer}<br><span class='note-text'>{disclaimer_text}</span>"
             
             st.markdown(f"<div class='msg-bot'>{full_answer_html}</div>", unsafe_allow_html=True)
@@ -546,7 +602,8 @@ else:
                 spoken_text = raw_answer_text + " Is there anything else I can help with?"
                 audio_b64 = text_to_audio_b64(spoken_text, st.session_state.output_accent)
                 if audio_b64:
-                    render_audio_player_b64(audio_b64)
+                    # <<< use new device-aware renderer with text fallback >>>
+                    render_speech(spoken_text, audio_b64)
 
             if pdf_filename:
                 pdf_path = os.path.join(CHEATSHEET_PATH, pdf_filename)
