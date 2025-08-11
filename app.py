@@ -265,7 +265,7 @@ THEME = DARK if st.session_state.theme == "dark" else LIGHT
 # --- FIX: "Initial Interaction" Gate ---
 if not st.session_state.session_started:
     st.markdown("<br><br>", unsafe_allow_html=True)
-    st.title("Ophthalmology AI Assistant")
+    st.title("Ophtha Bot")
     st.subheader("Tap the button below to start your session.")
     st.markdown("This one-time action enables voice features on mobile devices.")
     if st.button("Start Session", use_container_width=True, type="primary"):
