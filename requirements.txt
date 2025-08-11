@@ -12,3 +12,5 @@ streamlit-mic-recorder==0.0.8
 gTTS==2.5.4
 google-cloud-texttospeech==2.27.0
 mutagen==1.47.0
+
+
