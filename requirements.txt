@@ -6,11 +6,7 @@ langchain-community==0.3.27
 langchain-google-genai==2.1.9
 faiss-cpu==1.11.0.post1
 pydantic==2.11.7
-google-generativeai==0.8.5
 langchainhub==0.1.21
 streamlit-mic-recorder==0.0.8
 gTTS==2.5.4
-google-cloud-texttospeech==2.27.0
 mutagen==1.47.0
-
-
