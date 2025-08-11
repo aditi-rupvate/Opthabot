@@ -4,6 +4,7 @@ import uuid
 import base64
 import json
 import streamlit as st
+import streamlit.components.v1 as components
 from fpdf import FPDF
 import fitz  # PyMuPDF
 from langchain.agents import AgentExecutor, create_react_agent
@@ -18,13 +19,7 @@ from streamlit_mic_recorder import speech_to_text
 from gtts import gTTS
 from langchain.memory import ConversationBufferMemory
 
-# ---------- JS bridge ----------
-try:
-    from streamlit_javascript import st_javascript
-except Exception:
-    st_javascript = None
-
-# ---------- Config ----------
+# --- 1) Configuration ---
 GOOGLE_API_KEY = st.secrets.get("GOOGLE_API_KEY", "YOUR_DEFAULT_API_KEY_HERE")
 FAISS_INDEX_PATH = "oxford_handbook_kb"
 TEMP_STORAGE_PATH = "temp_user_docs"
@@ -32,13 +27,14 @@ CHEATSHEET_PATH = "downloads"
 os.makedirs(TEMP_STORAGE_PATH, exist_ok=True)
 os.makedirs(CHEATSHEET_PATH, exist_ok=True)
 
+# --- DISCLAIMER ---
 disclaimer_text = "— Note: This output is for academic purposes only and must not be used for clinical diagnosis."
 
-# ---------- LLM / Embeddings ----------
+# --- Backend Components ---
 embeddings = GoogleGenerativeAIEmbeddings(model="models/embedding-001", google_api_key=GOOGLE_API_KEY)
 llm = ChatGoogleGenerativeAI(model="gemini-1.5-flash-latest", temperature=0.3, google_api_key=GOOGLE_API_KEY)
 
-# ---------- Optional server TTS (for download) ----------
+# --- Optional server TTS (for downloadable MP3; not required for speaking) ---
 def text_to_audio_b64(text: str, tld: str) -> str | None:
     try:
         tts = gTTS(text=text, lang='en', tld=tld, slow=False)
@@ -47,126 +43,150 @@ def text_to_audio_b64(text: str, tld: str) -> str | None:
         with open(audio_filename, "rb") as f:
             audio_bytes = f.read()
         b64 = base64.b64encode(audio_bytes).decode()
-        try: os.remove(audio_filename)
-        except OSError: pass
+        try:
+            os.remove(audio_filename)
+        except OSError:
+            pass
         return b64
     except Exception as e:
         st.toast(f"Server TTS issue (browser voice will speak): {e}", icon="⚠️")
         return None
 
-# ---------- JS runtime (client) ----------
-def js_bootstrap_tts_runtime():
-    """Define window.TTS once in the page."""
-    if not st_javascript:
-        st.error("Missing dependency: streamlit-javascript. Add it to requirements.txt")
-        return
-    st_javascript("""
-    (function(){
-      if (window.TTS) return;
-      const AC = window.AudioContext || window.webkitAudioContext;
-      window.TTS = {
-        _unlocked: false,
-        async unlock(){
-          try{
-            if (AC){
-              window._ttsCtx = window._ttsCtx || new AC();
-              if (window._ttsCtx.state !== 'running'){
-                try{ await window._ttsCtx.resume(); }catch(e){}
-              }
-              // tiny silent buffer keeps iOS warm
-              try{
-                const ctx = window._ttsCtx;
-                const buf = ctx.createBuffer(1, 22050, 44100);
-                const src = ctx.createBufferSource();
-                src.buffer = buf; src.connect(ctx.destination); src.start(0);
-              }catch(e){}
-            }
-            // warm speechSynthesis with a silent utterance
-            const u = new SpeechSynthesisUtterance("ok");
-            u.volume = 0;
-            speechSynthesis.cancel();
-            speechSynthesis.speak(u);
-            this._unlocked = true;
-            return true;
-          }catch(e){ return false; }
-        },
-        async speak(text, hint){
-          try{
-            if (!this._unlocked) return false;
-            const ss = window.speechSynthesis;
-            if (!ss) return false;
+# --- Client voice components (no external deps) ---
 
-            function pickVoice(h){
-              const vs = ss.getVoices ? ss.getVoices() : [];
-              if (vs && vs.length){
-                if (h){
-                  const hit = vs.find(v => (v.lang||"").toLowerCase().includes(h.toLowerCase()));
-                  if (hit) return hit;
+def render_voice_unlock_button():
+    """
+    Renders a real HTML button. Its click handler runs entirely on the client:
+    - Resumes/creates an AudioContext (optional, future-proof)
+    - Warms up speechSynthesis with a silent utterance
+    - Sets localStorage.voice_ready = '1'
+    Button text changes to '✅ Voice Enabled' after success.
+    """
+    components.html(
+        """
+        <button id="voiceUnlockBtn"
+                style="padding:10px 14px;border-radius:10px;border:1px solid #444;
+                       background:#2b2f3a;color:#fff;font-weight:700;cursor:pointer;">
+            🔊 Enable Voice (one-time)
+        </button>
+        <script>
+        (function(){
+          const btn = document.getElementById('voiceUnlockBtn');
+          if (!btn) return;
+
+          // If already enabled (from earlier session), update UI immediately
+          if (localStorage.getItem('voice_ready') === '1') {
+            btn.textContent = "✅ Voice Enabled";
+            btn.disabled = true;
+            btn.style.opacity = "0.7";
+          }
+
+          const AC = window.AudioContext || window.webkitAudioContext;
+
+          async function unlockAudio(){
+            try{
+              // 1) WebAudio warmup (kept around for future use if needed)
+              if (AC){
+                window._voiceCtx = window._voiceCtx || new AC();
+                if (window._voiceCtx.state !== 'running'){
+                  try { await window._voiceCtx.resume(); } catch (e) {}
                 }
-                const en = vs.find(v => /^en[-_]/i.test(v.lang||""));
-                return en || vs[0];
+                try {
+                  const ctx = window._voiceCtx;
+                  const buf = ctx.createBuffer(1, 22050, 44100);
+                  const src = ctx.createBufferSource();
+                  src.buffer = buf; src.connect(ctx.destination); src.start(0);
+                } catch (e) {}
               }
-              return null;
-            }
 
-            if (!ss.getVoices || ss.getVoices().length === 0){
-              await new Promise(r => setTimeout(r, 400));
-            }
-            ss.cancel();
-            const u = new SpeechSynthesisUtterance(text);
-            const v = pickVoice(hint);
-            if (v) u.voice = v;
-            u.rate = 1; u.pitch = 1; u.volume = 1;
-            ss.speak(u);
-            return true;
-          }catch(e){ return false; }
-        }
-      };
-    })();
-    """)
+              // 2) SpeechSynthesis warmup with a silent utterance
+              const ss = window.speechSynthesis;
+              if (ss) {
+                const u = new SpeechSynthesisUtterance("ok");
+                u.volume = 0; // silent but "unlocks" many browsers
+                ss.cancel();
+                ss.speak(u);
+              }
 
-def render_client_unlock_button() -> bool:
-    """Real HTML button; unlock happens inside the actual click (same gesture)."""
-    if not st_javascript:
-        return False
-    st.markdown(
-        '<button id="voiceUnlockBtn" style="padding:10px 14px;border-radius:10px;border:1px solid #444;'
-        'background:#2b2f3a;color:#fff;font-weight:700;">🔊 Enable Voice (one-time)</button>',
-        unsafe_allow_html=True
-    )
-    st_javascript("""
-    (function(){
-      const btn = document.getElementById('voiceUnlockBtn');
-      if (!btn) return false;
-      if (!window._boundVoiceUnlock){
-        window._boundVoiceUnlock = true;
-        btn.addEventListener('click', async () => {
-          try{
-            if (!window.TTS) return;
-            const ok = await window.TTS.unlock();
-            if (ok){
-              localStorage.setItem('voice_ready','1');
+              // 3) Persist the unlock
+              localStorage.setItem('voice_ready', '1');
+
+              // 4) Update button UI
               btn.textContent = "✅ Voice Enabled";
               btn.disabled = true;
               btn.style.opacity = "0.7";
+            }catch(e){
+              console.warn("Unlock failed", e);
             }
-          }catch(e){}
-        }, {passive:true});
-      }
-      return true;
-    })();
-    """)
-    ready = st_javascript("Boolean(localStorage.getItem('voice_ready')) || Boolean(window.TTS && window.TTS._unlocked)")
-    return bool(ready)
+          }
 
-def js_speak(text: str, voice_hint: str) -> bool:
-    if not st_javascript:
-        return False
-    payload = json.dumps({"t": text, "h": voice_hint or ""})
-    ok = st_javascript(f"(async()=>{{const p={payload}; return await window.TTS?.speak?.(p.t,p.h);}})()")
-    return bool(ok)
+          // IMPORTANT: unlock *inside* the actual click gesture
+          btn.addEventListener('click', unlockAudio, { passive: true });
+        })();
+        </script>
+        """,
+        height=60,
+    )
 
-# ---------- PDF ----------
+def speak_via_browser(text: str, voice_hint: str):
+    """
+    Tiny hidden component that auto-speaks via speechSynthesis if localStorage.voice_ready == '1'.
+    Runs every time we render a new assistant message. No Python↔JS bridge needed.
+    """
+    safe_text = json.dumps(text)
+    safe_hint = json.dumps(voice_hint or "")
+    components.html(
+        f"""
+        <div style="display:none"></div>
+        <script>
+        (function(){
+          if (localStorage.getItem('voice_ready') !== '1') return;
+
+          const text = {safe_text};
+          const hint = {safe_hint};
+          const ss = window.speechSynthesis;
+          if (!ss) return;
+
+          function pickVoice(h) {{
+            const vs = ss.getVoices ? ss.getVoices() : [];
+            if (vs && vs.length) {{
+              if (h) {{
+                const hit = vs.find(v => (v.lang||"").toLowerCase().includes(h.toLowerCase()));
+                if (hit) return hit;
+              }}
+              const en = vs.find(v => /^en[-_]/i.test(v.lang||""));
+              return en || vs[0];
+            }}
+            return null;
+          }}
+
+          function speakNow(){{
+            try {{
+              ss.cancel();
+              const u = new SpeechSynthesisUtterance(text);
+              const v = pickVoice(hint);
+              if (v) u.voice = v;
+              u.rate = 1.0; u.pitch = 1.0; u.volume = 1.0;
+              ss.speak(u);
+            }} catch(e) {{}}
+          }}
+
+          if (!ss.getVoices || ss.getVoices().length === 0) {{
+            // Safari/iOS sometimes populates voices asynchronously
+            let spoke = false;
+            const once = () => {{ if (!spoke) {{ speakNow(); spoke = true; }} }};
+            ss.addEventListener('voiceschanged', once, {{ once: true }});
+            setTimeout(once, 600);
+          }} else {{
+            speakNow();
+          }}
+        }})();
+        </script>
+        """,
+        height=0,
+    )
+
+# --- PDF Generation Class ---
 class PDF(FPDF):
     def __init__(self, topic, *args, **kwargs):
         super().__init__(*args, **kwargs)
@@ -182,6 +202,7 @@ class PDF(FPDF):
         self.set_text_color(128, 128, 128)
         self.cell(0, 10, f"Page {self.page_no()}/{{nb}}", 0, 0, 'C')
 
+# --- PDF Function ---
 def create_formatted_pdf(text_content: str, topic: str) -> str:
     pdf = PDF(topic)
     try:
@@ -205,20 +226,29 @@ def create_formatted_pdf(text_content: str, topic: str) -> str:
     pdf.set_text_color(50, 50, 50)
     for line in text_content.split('\n'):
         line = line.strip()
-        if not line: continue
+        if not line:
+            continue
         if line.startswith('## '):
             pdf.set_font("DejaVu", "B", 14)
             pdf.set_text_color(0, 80, 150)
             pdf.multi_cell(0, line_height, line.replace('## ', ''), 0, 'L')
-            pdf.set_text_color(50, 50, 50); pdf.ln(2)
+            pdf.set_text_color(50, 50, 50)
+            pdf.ln(2)
         elif line.startswith('- '):
-            pdf.set_font("DejaVu", "", 11); pdf.set_x(20)
-            pdf.multi_cell(0, line_height, f"• {line.replace('- ', '', 1)}"); pdf.ln(1)
+            pdf.set_font("DejaVu", "", 11)
+            pdf.set_x(20)
+            pdf.multi_cell(0, line_height, f"• {line.replace('- ', '', 1)}")
+            pdf.ln(1)
         else:
-            pdf.set_font("DejaVu", "", 11); pdf.multi_cell(0, line_height, line)
-    pdf.ln(5); pdf.set_draw_color(200, 200, 200)
-    x = pdf.get_x(); pdf.line(x, pdf.get_y(), x + 180, pdf.get_y()); pdf.ln(4)
-    pdf.set_font("DejaVu", "", 8); pdf.set_text_color(120, 120, 120)
+            pdf.set_font("DejaVu", "", 11)
+            pdf.multi_cell(0, line_height, line)
+    pdf.ln(5)
+    pdf.set_draw_color(200, 200, 200)
+    x = pdf.get_x()
+    pdf.line(x, pdf.get_y(), x + 180, pdf.get_y())
+    pdf.ln(4)
+    pdf.set_font("DejaVu", "", 8)
+    pdf.set_text_color(120, 120, 120)
     pdf.multi_cell(0, 6, "Note: This content is for academic purposes only and must not be used for clinical diagnosis.")
     clean_topic = re.sub(r'[\W_]+', '_', topic).lower()
     filename = f"{clean_topic}_cheatsheet.pdf"
@@ -226,7 +256,7 @@ def create_formatted_pdf(text_content: str, topic: str) -> str:
     pdf.output(filepath)
     return filename
 
-# ---------- RAG / Agent ----------
+# --- Main Query Logic (RAG/Agent) ---
 def handle_query_logic(query: str, session_id: str = None):
     if session_id:
         temp_db_path = os.path.join(TEMP_STORAGE_PATH, session_id)
@@ -237,6 +267,7 @@ def handle_query_logic(query: str, session_id: str = None):
         if not os.path.exists(FAISS_INDEX_PATH):
             return "Error: Default knowledge base not available.", None
         db = FAISS.load_local(FAISS_INDEX_PATH, embeddings, allow_dangerous_deserialization=True)
+
     retriever = db.as_retriever(search_type="similarity", search_kwargs={"k": 5})
 
     def question_answer_func(q: str) -> str:
@@ -274,9 +305,10 @@ def handle_query_logic(query: str, session_id: str = None):
         "politely decline and state that you can only answer questions about ophthalmology."
     )
     prompt = base_prompt.partial(system_message=system_instruction)
-    agent = create_react_agent(llm, tools, prompt)
 
+    agent = create_react_agent(llm, tools, prompt)
     memory = ConversationBufferMemory(memory_key="chat_history", return_messages=True)
+
     for msg in st.session_state.chat_history:
         if "user" in msg:
             memory.chat_memory.add_user_message(msg["user"])
@@ -284,22 +316,30 @@ def handle_query_logic(query: str, session_id: str = None):
             clean_bot_message = re.sub(r'<.*?>', '', msg["bot"])
             memory.chat_memory.add_ai_message(clean_bot_message)
 
-    agent_executor = AgentExecutor(agent=agent, tools=tools, memory=memory,
-                                   verbose=False, handle_parsing_errors=True, return_intermediate_steps=True)
+    agent_executor = AgentExecutor(
+        agent=agent,
+        tools=tools,
+        memory=memory,
+        verbose=False,
+        handle_parsing_errors=True,
+        return_intermediate_steps=True
+    )
 
     response = agent_executor.invoke({"input": query})
     final_answer = response.get('output', "I couldn't find an answer.")
     pdf_filename = None
+
     if 'intermediate_steps' in response:
         for _, observation in response['intermediate_steps']:
             if isinstance(observation, str) and observation.startswith("PDF_GENERATED::"):
-                try: pdf_filename = observation.split("::")[1]
-                except IndexError: pass
+                try:
+                    pdf_filename = observation.split("::")[1]
+                except IndexError:
+                    pass
     return final_answer, pdf_filename
 
-# ---------- UI ----------
+# --- Streamlit UI ---
 st.set_page_config(layout="centered")
-js_bootstrap_tts_runtime()
 
 LIGHT = {"bg": "#f8fafb", "bar": "#fff", "bot": "#e9eef6", "user": "#d1e7dd", "text": "#191b22", "input": "#e8edf2", "border": "#d4dde7", "expander": "#f4f7fb"}
 DARK  = {"bg": "#18181c", "bar": "#202126", "bot": "#232733", "user": "#22577a", "text": "#f3f5f8", "input": "#242730", "border": "#26282f", "expander": "#24272e"}
@@ -310,15 +350,14 @@ if "chat_history" not in st.session_state: st.session_state.chat_history = []
 if "session_id" not in st.session_state: st.session_state.session_id = None
 if "active_doc_name" not in st.session_state: st.session_state.active_doc_name = None
 if "voice_enabled" not in st.session_state: st.session_state.voice_enabled = True
-if "input_accent" not in st.session_state: st.session_state.input_accent = 'en-GB'   # browser voice hint
-if "output_accent" not in st.session_state: st.session_state.output_accent = 'co.uk' # gTTS TLD (optional)
-if "voice_ready" not in st.session_state: st.session_state.voice_ready = False
-
+if "input_accent" not in st.session_state: st.session_state.input_accent = 'en-GB'   # browser voice hint (e.g., en-US, en-GB)
+if "output_accent" not in st.session_state: st.session_state.output_accent = 'co.uk' # gTTS TLD (optional download)
 THEME = DARK if st.session_state.theme == "dark" else LIGHT
 
-# Top bar
+# Topbar + toggles
 st.markdown(f"""
 <style>
+  .stApp {{ background: {THEME['bg']}; color: {THEME['text']}; }}
   .topbar {{ background: {THEME['bar']}; border-radius: 16px; padding: 1.0em 1.2em; 
              margin-bottom: 1.0em; box-shadow: 0 2px 12px rgba(44,46,66,0.06); }}
   .title   {{ font-size: 2.2rem; font-weight: 800; letter-spacing: .02em; }}
@@ -333,41 +372,43 @@ with c1:
 with c2:
     st.session_state.voice_enabled = st.toggle("Enable Voice Chat", value=st.session_state.voice_enabled)
 
+# Voice: show unlock UI + accent selectors
 if st.session_state.voice_enabled:
-    # One-time client unlock button (actual click handler runs on client)
-    voice_ready = render_client_unlock_button()
-    st.session_state.voice_ready = voice_ready
-    if voice_ready:
-        st.info("Voice is enabled — I’ll speak every answer.")
-    else:
-        st.warning("Tap the button once to enable voice.")
+    st.warning("Tap the button once to enable voice.", icon="🗣️")
+    render_voice_unlock_button()
 
-    # Accent selectors
     input_accent_options = {
         'American (US)': 'en-US', 'British (UK)': 'en-GB', 'Indian': 'en-IN',
         'Australian': 'en-AU', 'Canadian': 'en-CA', 'South African': 'en-ZA'
     }
     output_accent_options = {'American (US)': 'com', 'British (UK)': 'co.uk', 'Indian': 'co.in'}
 
-    selected_input_label = st.selectbox("Your Accent (for browser voice)", list(input_accent_options.keys()),
-                                        index=list(input_accent_options.values()).index(st.session_state.input_accent))
+    selected_input_label = st.selectbox(
+        "Your Accent (for browser voice)", list(input_accent_options.keys()),
+        index=list(input_accent_options.values()).index(st.session_state.input_accent)
+    )
     st.session_state.input_accent = input_accent_options[selected_input_label]
 
-    selected_output_label = st.selectbox("Assistant's Accent (for MP3 download)",
-                                         list(output_accent_options.keys()),
-                                         index=list(output_accent_options.values()).index(st.session_state.output_accent))
+    selected_output_label = st.selectbox(
+        "Assistant's Accent (for MP3 download)", list(output_accent_options.keys()),
+        index=list(output_accent_options.values()).index(st.session_state.output_accent)
+    )
     st.session_state.output_accent = output_accent_options[selected_output_label]
 
-# Chat history
+# Chat history render
 for entry in st.session_state.chat_history:
     if "user" in entry:
-        st.markdown(f"<div style='background:{THEME['user']};color:{THEME['text']};border:1px solid {THEME['border']};"
-                    f"border-radius:14px;padding:10px 14px;margin:6px 0;text-align:right'>{entry['user']}</div>",
-                    unsafe_allow_html=True)
+        st.markdown(
+            f"<div style='background:{THEME['user']};color:{THEME['text']};border:1px solid {THEME['border']};"
+            f"border-radius:14px;padding:10px 14px;margin:6px 0;text-align:right'>{entry['user']}</div>",
+            unsafe_allow_html=True
+        )
     else:
-        st.markdown(f"<div style='background:{THEME['bot']};color:{THEME['text']};border:1px solid {THEME['border']};"
-                    f"border-radius:14px;padding:10px 14px;margin:6px 0'>{entry['bot']}</div>",
-                    unsafe_allow_html=True)
+        st.markdown(
+            f"<div style='background:{THEME['bot']};color:{THEME['text']};border:1px solid {THEME['border']};"
+            f"border-radius:14px;padding:10px 14px;margin:6px 0'>{entry['bot']}</div>",
+            unsafe_allow_html=True
+        )
         if entry.get("pdf_filename"):
             pdf_path = os.path.join(CHEATSHEET_PATH, entry["pdf_filename"])
             if os.path.exists(pdf_path):
@@ -411,9 +452,11 @@ else:
 
 # On message
 if user_prompt:
-    st.markdown(f"<div style='background:{THEME['user']};color:{THEME['text']};border:1px solid {THEME['border']};"
-                f"border-radius:14px;padding:10px 14px;margin:6px 0;text-align:right'>{user_prompt}</div>",
-                unsafe_allow_html=True)
+    st.markdown(
+        f"<div style='background:{THEME['user']};color:{THEME['text']};border:1px solid {THEME['border']};"
+        f"border-radius:14px;padding:10px 14px;margin:6px 0;text-align:right'>{user_prompt}</div>",
+        unsafe_allow_html=True
+    )
     st.session_state.chat_history.append({"user": user_prompt})
 
     with st.spinner("Thinking..."):
@@ -422,15 +465,17 @@ if user_prompt:
         raw_answer_text = clean_text.replace('`', '').replace('*', '')
         full_answer_html = f"{answer}<br><span style='color:#787878'>{disclaimer_text}</span>"
 
-        st.markdown(f"<div style='background:{THEME['bot']};color:{THEME['text']};border:1px solid {THEME['border']};"
-                    f"border-radius:14px;padding:10px 14px;margin:6px 0'>{full_answer_html}</div>",
-                    unsafe_allow_html=True)
+        st.markdown(
+            f"<div style='background:{THEME['bot']};color:{THEME['text']};border:1px solid {THEME['border']};"
+            f"border-radius:14px;padding:10px 14px;margin:6px 0'>{full_answer_html}</div>",
+            unsafe_allow_html=True
+        )
 
-        # Speak automatically after unlock (browser voice)
-        if st.session_state.voice_enabled and st.session_state.voice_ready:
-            js_speak(raw_answer_text + " Is there anything else I can help with?", st.session_state.input_accent)
+        # Speak automatically (after one-time unlock) via browser voice
+        if st.session_state.voice_enabled:
+            speak_via_browser(raw_answer_text + " Is there anything else I can help with?", st.session_state.input_accent)
 
-        # Optional MP3 generation (download)
+        # Optional: offer MP3 download for cheatsheet answers
         if pdf_filename:
             pdf_path = os.path.join(CHEATSHEET_PATH, pdf_filename)
             if os.path.exists(pdf_path):
