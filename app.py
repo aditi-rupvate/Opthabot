@@ -315,7 +315,7 @@ else:
     </style>
     """, unsafe_allow_html=True)
 
-    st.markdown("<div class='topbar-custom'>Ophthalmology AI Assistant</div>", unsafe_allow_html=True)
+    st.markdown("<div class='topbar-custom'>Ophtha Bot</div>", unsafe_allow_html=True)
 
     for entry in st.session_state.chat_history:
         if "user" in entry:
