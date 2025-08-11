@@ -3,6 +3,25 @@ fpdf==1.7.2
 PyMuPDF==1.26.3
 langchain==0.3.27
 langchain-community==0.3.27
+langchainhub==0.1.21
+faiss-cpu==1.11.0.post1
+pydantic==2.11.7
+streamlit-mic-recorder==0.0.8
+gTTS==2.5.4
+google-cloud-texttospeech==2.27.0
+mutagen==1.47.0
+
+# --- Google + LangChain (legacy SDK path) ---
+google-generativeai==0.8.5
+google-ai-generativelanguage==0.6.15
+# Pick ONE of these older adapters (start with 1.0.7; if you need newer features try 2.1.2):
+langchain-google-genai==1.0.7
+# langchain-google-genai==2.1.2
+streamlit==1.48.0
+fpdf==1.7.2
+PyMuPDF==1.26.3
+langchain==0.3.27
+langchain-community==0.3.27
 langchain-google-genai==2.1.9
 faiss-cpu==1.11.0.post1
 pydantic==2.11.7
