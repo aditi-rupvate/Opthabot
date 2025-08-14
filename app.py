@@ -81,32 +81,41 @@ DOMAIN_REFUSAL = (
 embeddings = GoogleGenerativeAIEmbeddings(model="models/embedding-001", google_api_key=GOOGLE_API_KEY)
 llm = ChatGoogleGenerativeAI(model="gemini-1.5-flash-latest", temperature=0.3, google_api_key=GOOGLE_API_KEY)
 
-# ---------------- DYNAMIC FOLLOW-UP: helper chain ---------------------------
+# ---------------- DYNAMIC FOLLOW-UP (warmer, human tone) --------------------
 def generate_teaching_followup(user_q: str, explanation: str) -> str:
     """
-    Produce ONE short, dynamic follow-up line:
-      - either a comprehension check, an offer to simplify, or a bite-sized self-check question.
+    ONE short, emotionally intelligent follow-up line:
+      - Gentle check, offer to simplify, or tiny self-check (MCQ/short answer).
+      - Supportive, conversational tone with contractions.
+      - Max 20 words. No emojis/preamble. Don’t reveal answers.
     """
     tmpl = PromptTemplate.from_template(
-        """You are an ophthalmology tutor.
-Choose ONE best follow-up style for the learner based on the question and explanation:
-- Comprehension check question tailored to the content, OR
-- Offer to simplify with an easier explanation/analogy, OR
-- One short self-check question (MCQ or short answer); do NOT reveal answers.
+        """You are an empathetic ophthalmology tutor with a warm, human style.
+Write ONE short, emotionally intelligent follow-up line that best fits the learner and the content.
 
-Constraints:
-- 25 words max
-- No headers/emojis/preamble; just the line.
+Choose exactly ONE:
+- A gentle comprehension check, OR
+- An offer to simplify with an analogy/example, OR
+- A tiny self-check (MCQ/short answer, no answer revealed).
 
+Tone & style:
+- Supportive, conversational, encouraging. Use contractions.
+- Avoid robotic phrasing like "Did you understand?" or "Do you want me to explain it easier?".
+- Vary natural wording; sound like a caring clinician-teacher, not a script.
+- Max 20 words. No emojis. No preamble.
+
+Context
 User question: {user_q}
-Explanation: {explanation}
+Your explanation: {explanation}
 
-Follow-up:"""
+Return only the single follow-up line:"""
     )
     chain = LLMChain(llm=llm, prompt=tmpl)
     out = chain.run(user_q=user_q, explanation=explanation).strip()
-    # guardrails: keep it single line & short
-    return re.sub(r"\s+", " ", out.split("\n")[0])[:300]
+    line = re.sub(r"`+", "", out).split("\n")[0]
+    line = re.sub(r"\s+", " ", line).strip()
+    return line[:200]
+# ---------------------------------------------------------------------------
 
 # --- Text-to-Speech: mobile-safe (returns base64 + renders HTML audio) ---
 def text_to_audio_b64(text: str, tld: str) -> str | None:
@@ -287,7 +296,7 @@ def handle_query_logic(query: str, session_id: str = None):
     
     base_prompt = hub.pull("hwchase17/react-chat")
 
-    # System prompt toggles depth/style but dynamic follow-up is always on now
+    # System prompt toggles depth/style; dynamic follow-up is always on
     teaching_mode = st.session_state.get("teaching_mode", False)
     if teaching_mode:
         system_instruction = (
@@ -340,7 +349,7 @@ def handle_query_logic(query: str, session_id: str = None):
                 except IndexError:
                     pass
 
-    # ---------------- DYNAMIC FOLLOW-UP: now applied to ALL answers ----------
+    # ---------------- DYNAMIC FOLLOW-UP: applied to ALL answers --------------
     if isinstance(final_answer, str) and final_answer.strip():
         try:
             follow = generate_teaching_followup(query, final_answer)
@@ -356,7 +365,7 @@ def handle_query_logic(query: str, session_id: str = None):
 st.set_page_config(layout="centered")
 
 LIGHT = {"bg": "#f8fafb", "bar": "#fff", "bot": "#e9eef6", "user": "#d1e7dd", "text": "#191b22", "input": "#e8edf2", "border": "#d4dde7", "expander": "#f4f7fb"}
-DARK = {"bg": "#18181c", "bar": "#202126", "bot": "#232733", "user": "#22577a", "text": "#f3f5f8", "input": "#242730", "border": "#26282f", "expander": "#24272e"}
+DARK = {"bg": "#202126", "bar": "#232733", "bot": "#232733", "user": "#22577a", "text": "#f3f5f8", "input": "#242730", "border": "#26282f", "expander": "#24272e"}
 
 # Initialize session state variables
 if "theme" not in st.session_state: st.session_state.theme = "dark"
@@ -380,11 +389,11 @@ with st.sidebar:
         st.rerun()
 
     st.divider()
-    # Teaching Mode still controls style/depth; follow-up is always on
+    # Teaching Mode controls style/depth; follow-up always on
     st.session_state.teaching_mode = st.toggle(
         "Teaching Mode (tutor-style answers + clearer steps)",
         value=st.session_state.teaching_mode,
-        help="When on, explanations are stepwise with definitions and examples. Dynamic follow-up is always enabled."
+        help="When on, explanations are stepwise with definitions and examples."
     )
 
     st.header("Voice Settings")
