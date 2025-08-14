@@ -871,7 +871,6 @@ def _escape_html(s: str) -> str:
     return s.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
 
 def generate_flashcards(topic: str, num_cards: int = 10):
-    # Escape JSON braces with double {{ }} and use .invoke to avoid run() multi-input issues
     template = (
         "You are an ophthalmology educator.\n"
         "Create {num} concise flashcards for quick revision on: \"{topic}\".\n"
@@ -887,10 +886,7 @@ def generate_flashcards(topic: str, num_cards: int = 10):
         "}}\n"
         "Keep strictly to ophthalmology."
     )
-    prompt = PromptTemplate(
-        input_variables=["topic", "num"],
-        template=template,
-    )
+    prompt = PromptTemplate(input_variables=["topic", "num"], template=template)
     chain = LLMChain(llm=llm, prompt=prompt)
     raw = chain.invoke({"topic": topic or "general ophthalmology", "num": int(num_cards)})["text"]
     data = _parse_json_block(raw) or {"cards": []}
@@ -916,15 +912,14 @@ def render_flash_dashboard(fs):
 def render_flash_ui():
     st.markdown("<div class='topbar-custom'>Flashcards Mode · Rapid Recall</div>", unsafe_allow_html=True)
 
-    # Flip card styles + swipe script (scoped to #flash-scope)
+    # Flip card styles + swipe script — now class-based (no checkbox), always resets on new card
     st.markdown(f"""
     <style>
       #flash-scope .flip-wrap {{ perspective: 1200px; width: min(720px, 95%); margin: 0 auto 0.75rem auto; }}
       #flash-scope .flip-card {{ display: block; width: 100%; height: 320px; border-radius: 18px; border: 1px solid {THEME['border']};
         background: linear-gradient(135deg, #1a2233 0%, #2a3550 100%); box-shadow: 0 10px 28px rgba(0,0,0,.25); position: relative; cursor: pointer; outline: none; }}
       #flash-scope .flip-card-inner {{ position: relative; width: 100%; height: 100%; transform-style: preserve-3d; transition: transform .55s cubic-bezier(.2,.7,.2,1); }}
-      #flash-scope input[type="checkbox"] {{ display:none; }}
-      #flash-scope input[type="checkbox"]:checked + label .flip-card-inner {{ transform: rotateY(180deg); }}
+      #flash-scope .flip-card-inner.is-flipped {{ transform: rotateY(180deg); }}
       #flash-scope .side {{ position: absolute; inset: 0; backface-visibility: hidden; border-radius: 18px; display: flex; flex-direction: column; justify-content: center; align-items: center; padding: 1.2rem; color: #f6f7fb; }}
       #flash-scope .back {{ transform: rotateY(180deg); background: linear-gradient(135deg, #26375b 0%, #1e2a45 100%); }}
       #flash-scope .front .hint, #flash-scope .back .hint {{ position: absolute; bottom: 12px; opacity: .85; font-size: .95rem; }}
@@ -1007,17 +1002,16 @@ def render_flash_ui():
     _dash(fs)
     st.markdown("<br/>", unsafe_allow_html=True)
 
-    # Current card with flip (unique id + reset to front)
+    # Current card with flip (pure JS class toggle; always resets to front)
     card = fs["cards"][idx]
     front = _escape_html(card["front"])
     back  = _escape_html(card["back"])
-    flip_id = f"flipcheck_{idx}_{uuid.uuid4().hex[:6]}"
+    fc_uid = f"fc_{idx}_{uuid.uuid4().hex[:6]}"
 
     st.markdown(f"""
     <div id="flash-scope" tabindex="0">
-      <div class="flip-wrap">
-        <input id="{flip_id}" type="checkbox" />
-        <label class="flip-card" for="{flip_id}" aria-label="Flashcard (tap to flip)">
+      <div id="{fc_uid}" class="flip-wrap">
+        <div class="flip-card" aria-label="Flashcard (tap to flip)">
           <div class="flip-card-inner">
             <div class="side front">
               <div class="q">{front}</div>
@@ -1028,13 +1022,21 @@ def render_flash_ui():
               <div class="hint"></div>
             </div>
           </div>
-        </label>
+        </div>
       </div>
     </div>
     <script>
       (function(){{
-        var el = document.getElementById("{flip_id}");
-        if (el) el.checked = false; // always start unflipped
+        var root = document.getElementById("{fc_uid}");
+        if(!root) return;
+        var inner = root.querySelector('.flip-card-inner');
+        var card  = root.querySelector('.flip-card');
+        // ensure front on render
+        inner.classList.remove('is-flipped');
+        card.addEventListener('click', function(e){{
+          e.preventDefault();
+          inner.classList.toggle('is-flipped');
+        }});
       }})();
     </script>
     """, unsafe_allow_html=True)
@@ -1111,8 +1113,7 @@ if "voice_enabled" not in st.session_state: st.session_state.voice_enabled = Fal
 if "input_accent" not in st.session_state: st.session_state.input_accent = 'en-US'
 if "output_accent" not in st.session_state: st.session_state.output_accent = 'com'
 if "teaching_mode" not in st.session_state: st.session_state.teaching_mode = False
-# baseline = Chat behavior when mode is None
-if "mode" not in st.session_state: st.session_state.mode = None
+if "mode" not in st.session_state: st.session_state.mode = None  # baseline Chat if modes disabled
 
 THEME = DARK if st.session_state.theme == "dark" else LIGHT
 
@@ -1146,49 +1147,38 @@ st.markdown(f"""
 
 st.markdown("<div class='topbar-custom'>Ophtha Bot : AI Chatbot for Postgrad Ophthalmology Students</div>", unsafe_allow_html=True)
 
-# === TOP: Upload file (moved from sidebar) ===================================
-def render_top_uploader():
-    st.markdown("<div class='card'><div class='card-title'>Upload a Custom Document</div>", unsafe_allow_html=True)
-    uploaded_file = st.file_uploader("Upload a PDF", type="pdf", key="pdf_uploader_top")
-    c1, c2 = st.columns([1,1])
-    with c1:
-        if uploaded_file and st.button("Process Document", key="process_pdf_top", use_container_width=True):
-            with st.spinner("Processing document..."):
-                session_id = str(uuid.uuid4())
-                temp_dir = os.path.join(TEMP_STORAGE_PATH, session_id); os.makedirs(temp_dir, exist_ok=True)
-                file_path = os.path.join(temp_dir, uploaded_file.name)
-                with open(file_path, "wb") as buffer: buffer.write(uploaded_file.getbuffer())
-                doc = fitz.open(file_path)
-                texts = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=100).split_text(
-                    "".join(page.get_text() for page in doc)
-                )
-                doc.close()
-                FAISS.from_texts(texts, embeddings).save_local(temp_dir)
-                st.session_state.session_id = session_id; st.session_state.active_doc_name = uploaded_file.name
-                st.success(f"Ready for questions about **{uploaded_file.name}**.")
-                time.sleep(0.3)
-                st.rerun()
-    with c2:
-        if st.session_state.active_doc_name and st.button("Clear Document & Revert to Default", key="clear_doc_main", use_container_width=True):
-            st.session_state.session_id = None; st.session_state.active_doc_name = None
-            st.experimental_rerun()
+# --- SIDEBAR (re-ordered per your request) ----------------------------------
+with st.sidebar:
+    # 1) Custom File at the TOP
+    st.header("Custom File")
+    uploaded_file = st.file_uploader("Upload a PDF", type="pdf", key="pdf_uploader")
+    if uploaded_file and st.button("Process Document", key="process_pdf", use_container_width=True):
+        with st.spinner("Processing document..."):
+            session_id = str(uuid.uuid4())
+            temp_dir = os.path.join(TEMP_STORAGE_PATH, session_id); os.makedirs(temp_dir, exist_ok=True)
+            file_path = os.path.join(temp_dir, uploaded_file.name)
+            with open(file_path, "wb") as buffer: buffer.write(uploaded_file.getbuffer())
+            doc = fitz.open(file_path)
+            texts = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=100).split_text(
+                "".join(page.get_text() for page in doc)
+            )
+            doc.close()
+            FAISS.from_texts(texts, embeddings).save_local(temp_dir)
+            st.session_state.session_id = session_id; st.session_state.active_doc_name = uploaded_file.name
+            st.success(f"Ready for questions about **{uploaded_file.name}**.")
+            time.sleep(0.4)
+            st.rerun()
 
     if st.session_state.active_doc_name:
         st.caption(f"Active Document: **{st.session_state['active_doc_name']}**")
-    st.markdown("</div>", unsafe_allow_html=True)
+        if st.button("Clear Document & Revert to Default", key="clear_doc_sidebar", use_container_width=True):
+            st.session_state.session_id = None; st.session_state.active_doc_name = None
+            st.rerun()
 
-render_top_uploader()
+    st.divider()
 
-# --- Sidebar -----------------------------------------------------------------
-with st.sidebar:
-    st.header("Settings")
-    is_dark_on = st.session_state.theme == "dark"
-    toggled = st.toggle("Dark Mode", value=is_dark_on, key="theme_toggle", help="Switch themes")
-    if toggled != is_dark_on:
-        st.session_state.theme = "dark" if toggled else "light"; st.rerun()
-
+    # 2) Modes
     st.header("Modes")
-
     allowed_modes = ["Teaching", "Exam", "Case", "Flashcards"]
     enable_modes = st.toggle(
         "Enable study modes",
@@ -1209,7 +1199,8 @@ with st.sidebar:
     st.divider()
     st.session_state.teaching_mode = (st.session_state.mode == "Teaching")
 
-    st.header("Voice Chat")  # renamed from Voice Settings
+    # 3) Voice Chat (renamed)
+    st.header("Voice Chat")
     st.session_state.voice_enabled = st.toggle("Enable Voice Chat", value=st.session_state.voice_enabled, help="Enable voice input and spoken responses.")
     if st.session_state.voice_enabled and (st.session_state.mode in ["Teaching"] or st.session_state.mode is None):
         input_accent_options = {
@@ -1227,6 +1218,15 @@ with st.sidebar:
             "Assistant's Accent (for output)", options=list(output_accent_options.keys()),
             index=list(output_accent_options.values()).index(st.session_state.output_accent)
         )]
+
+    st.divider()
+
+    # 4) Settings moved to the bottom (where upload used to be)
+    st.header("Settings")
+    is_dark_on = st.session_state.theme == "dark"
+    toggled = st.toggle("Dark Mode", value=is_dark_on, key="theme_toggle", help="Switch themes")
+    if toggled != is_dark_on:
+        st.session_state.theme = "dark" if toggled else "light"; st.rerun()
 
 # --- Chat history (baseline/Teaching) ---------------------------------------
 if (st.session_state.mode in ["Teaching"]) or (st.session_state.mode is None):
