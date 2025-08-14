@@ -81,6 +81,33 @@ DOMAIN_REFUSAL = (
 embeddings = GoogleGenerativeAIEmbeddings(model="models/embedding-001", google_api_key=GOOGLE_API_KEY)
 llm = ChatGoogleGenerativeAI(model="gemini-1.5-flash-latest", temperature=0.3, google_api_key=GOOGLE_API_KEY)
 
+# ---------------- DYNAMIC FOLLOW-UP: helper chain ---------------------------
+def generate_teaching_followup(user_q: str, explanation: str) -> str:
+    """
+    Produce ONE short, dynamic follow-up line:
+      - either a comprehension check, an offer to simplify, or a bite-sized self-check question.
+    """
+    tmpl = PromptTemplate.from_template(
+        """You are an ophthalmology tutor.
+Choose ONE best follow-up style for the learner based on the question and explanation:
+- Comprehension check question tailored to the content, OR
+- Offer to simplify with an easier explanation/analogy, OR
+- One short self-check question (MCQ or short answer); do NOT reveal answers.
+
+Constraints:
+- 25 words max
+- No headers/emojis/preamble; just the line.
+
+User question: {user_q}
+Explanation: {explanation}
+
+Follow-up:"""
+    )
+    chain = LLMChain(llm=llm, prompt=tmpl)
+    out = chain.run(user_q=user_q, explanation=explanation).strip()
+    # guardrails: keep it single line & short
+    return re.sub(r"\s+", " ", out.split("\n")[0])[:300]
+
 # --- Text-to-Speech: mobile-safe (returns base64 + renders HTML audio) ---
 def text_to_audio_b64(text: str, tld: str) -> str | None:
     try:
@@ -216,6 +243,7 @@ def handle_query_logic(query: str, session_id: str = None):
         return DOMAIN_REFUSAL, None
     # --- end gate ---
 
+    # --- Choose KB (default or uploaded) ---
     if session_id:
         temp_db_path = os.path.join(TEMP_STORAGE_PATH, session_id)
         if not os.path.exists(temp_db_path):
@@ -228,9 +256,10 @@ def handle_query_logic(query: str, session_id: str = None):
     
     retriever = db.as_retriever(search_type="similarity", search_kwargs={"k": 5})
 
-    def question_answer_func(query: str) -> str:
+    # --- Chains for tools ---
+    def question_answer_func(q: str) -> str:
         chain = RetrievalQA.from_chain_type(llm=llm, chain_type="stuff", retriever=retriever)
-        return chain.invoke(query)['result']
+        return chain.invoke(q)['result']
 
     def concept_explainer_func(topic: str) -> str:
         context = "\n\n".join([doc.page_content for doc in retriever.get_relevant_documents(topic)])
@@ -257,17 +286,32 @@ def handle_query_logic(query: str, session_id: str = None):
     ]
     
     base_prompt = hub.pull("hwchase17/react-chat")
-    system_instruction = (
-        "You are an expert ophthalmology assistant. Your purpose is to answer questions strictly related to "
-        "ophthalmology or the provided documents. If the user asks a question that is outside of this scope, you must "
-        "politely decline and state that you can only answer questions about ophthalmology."
-    )
-    prompt = base_prompt.partial(system_message=system_instruction)
 
+    # System prompt toggles depth/style but dynamic follow-up is always on now
+    teaching_mode = st.session_state.get("teaching_mode", False)
+    if teaching_mode:
+        system_instruction = (
+            "You are an expert ophthalmology tutor. "
+            "Rules: "
+            "1) Answer strictly ophthalmology questions. "
+            "2) Explain clearly in short steps, define jargon in-line, and use concise examples or analogies when helpful. "
+            "3) Prefer bullet points and short paragraphs; keep focus and avoid fluff. "
+            "4) Calibrate depth to a postgraduate student. "
+            "5) At the end, do NOT repeat the answer—just include one dynamic follow-up line that either "
+            "   (a) checks understanding, (b) offers to simplify, or (c) asks a tiny self-check question. "
+            "6) Never leave the ophthalmology domain."
+        )
+    else:
+        system_instruction = (
+            "You are an expert ophthalmology assistant. Your purpose is to answer questions strictly related to "
+            "ophthalmology or the provided documents. If the user asks a question that is outside of this scope, you must "
+            "politely decline and state that you can only answer questions about ophthalmology."
+        )
+
+    prompt = base_prompt.partial(system_message=system_instruction)
     agent = create_react_agent(llm, tools, prompt)
     
     memory = ConversationBufferMemory(memory_key="chat_history", return_messages=True)
-    
     for msg in st.session_state.chat_history:
         if "user" in msg:
             memory.chat_memory.add_user_message(msg["user"])
@@ -285,7 +329,6 @@ def handle_query_logic(query: str, session_id: str = None):
     )
 
     response = agent_executor.invoke({"input": query})
-    
     final_answer = response.get('output', "I couldn't find an answer.")
     pdf_filename = None
 
@@ -296,6 +339,17 @@ def handle_query_logic(query: str, session_id: str = None):
                     pdf_filename = observation.split("::")[1]
                 except IndexError:
                     pass
+
+    # ---------------- DYNAMIC FOLLOW-UP: now applied to ALL answers ----------
+    if isinstance(final_answer, str) and final_answer.strip():
+        try:
+            follow = generate_teaching_followup(query, final_answer)
+            if follow:
+                final_answer = f"{final_answer}\n\n{follow}"
+        except Exception:
+            pass
+    # ------------------------------------------------------------------------
+
     return final_answer, pdf_filename
 
 # --- Streamlit UI ---
@@ -312,6 +366,7 @@ if "active_doc_name" not in st.session_state: st.session_state.active_doc_name =
 if "voice_enabled" not in st.session_state: st.session_state.voice_enabled = False
 if "input_accent" not in st.session_state: st.session_state.input_accent = 'en-US'
 if "output_accent" not in st.session_state: st.session_state.output_accent = 'com'
+if "teaching_mode" not in st.session_state: st.session_state.teaching_mode = False
 
 THEME = DARK if st.session_state.theme == "dark" else LIGHT
 
@@ -325,6 +380,13 @@ with st.sidebar:
         st.rerun()
 
     st.divider()
+    # Teaching Mode still controls style/depth; follow-up is always on
+    st.session_state.teaching_mode = st.toggle(
+        "Teaching Mode (tutor-style answers + clearer steps)",
+        value=st.session_state.teaching_mode,
+        help="When on, explanations are stepwise with definitions and examples. Dynamic follow-up is always enabled."
+    )
+
     st.header("Voice Settings")
     st.session_state.voice_enabled = st.toggle("Enable Voice Chat", value=st.session_state.voice_enabled, help="Enable voice input and spoken responses.")
 
