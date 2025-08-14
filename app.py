@@ -38,21 +38,21 @@ disclaimer_text = "— Note: This output is for academic purposes only and must 
 
 # === Ophthalmology gate ======================================================
 OPHTH_KEYWORDS = [
-    "eye", "ocular", "ophthalmology", "ophthalmic", "vision", "visual acuity", "refraction",
-    "cornea", "conjunctiva", "sclera", "anterior chamber", "iris", "pupil", "lens",
-    "vitreous", "retina", "macula", "fovea", "optic nerve", "optic disc",
-    "cataract", "glaucoma", "amd", "age-related macular degeneration", "diabetic retinopathy",
-    "dr", "csr", "central serous", "uveitis", "keratoconus", "dry eye", "meibomian",
-    "blepharitis", "strabismus", "amblyopia", "endophthalmitis", "retinal detachment",
-    "rhegmatogenous", "retinitis pigmentosa", "toxoplasmosis", "cmv retinitis",
-    "slit lamp", "gonioscopy", "tonometry", "intraocular pressure", "iop",
-    "oct", "optical coherence tomography", "perimetry", "visual field",
-    "fundus", "ophthalmoscopy", "fluorescein angiography", "ultrasound b-scan",
-    "lasik", "prk", "iol", "intraocular lens", "phaco", "vitrectomy", "trabeculectomy",
-    "latanoprost", "timolol", "brimonidine", "dorzolamide", "pilocarpine",
-    "prednisolone", "moxifloxacin", "cyclopentolate", "tropicamide",
-    "red eye", "floaters", "flashes", "metamorphopsia", "diplopia", "photophobia",
-    "eye trauma", "chemical injury", "contact lens", "orthokeratology"
+    "eye","ocular","ophthalmology","ophthalmic","vision","visual acuity","refraction",
+    "cornea","conjunctiva","sclera","anterior chamber","iris","pupil","lens",
+    "vitreous","retina","macula","fovea","optic nerve","optic disc",
+    "cataract","glaucoma","amd","age-related macular degeneration","diabetic retinopathy",
+    "dr","csr","central serous","uveitis","keratoconus","dry eye","meibomian",
+    "blepharitis","strabismus","amblyopia","endophthalmitis","retinal detachment",
+    "rhegmatogenous","retinitis pigmentosa","toxoplasmosis","cmv retinitis",
+    "slit lamp","gonioscopy","tonometry","intraocular pressure","iop",
+    "oct","optical coherence tomography","perimetry","visual field",
+    "fundus","ophthalmoscopy","fluorescein angiography","ultrasound b-scan",
+    "lasik","prk","iol","intraocular lens","phaco","vitrectomy","trabeculectomy",
+    "latanoprost","timolol","brimonidine","dorzolamide","pilocarpine",
+    "prednisolone","moxifloxacin","cyclopentolate","tropicamide",
+    "red eye","floaters","flashes","metamorphopsia","diplopia","photophobia",
+    "eye trauma","chemical injury","contact lens","orthokeratology"
 ]
 GREETING_PATTERNS = [
     r"^\s*(hi|hello|hey|yo)\b",
@@ -76,7 +76,7 @@ DOMAIN_REFUSAL = (
 embeddings = GoogleGenerativeAIEmbeddings(model="models/embedding-001", google_api_key=GOOGLE_API_KEY)
 llm = ChatGoogleGenerativeAI(model="gemini-1.5-flash-latest", temperature=0.3, google_api_key=GOOGLE_API_KEY)
 
-# ---------------- DYNAMIC FOLLOW-UP (warm, human tone) ----------------------
+# ---------------- DYNAMIC FOLLOW-UP ----------------------
 def generate_teaching_followup(user_q: str, explanation: str) -> str:
     tmpl = PromptTemplate.from_template(
         """You are an empathetic ophthalmology tutor with a warm, human style.
@@ -158,7 +158,7 @@ def render_audio_player_b64(audio_b64: str):
     """
     st.markdown(audio_html, unsafe_allow_html=True)
 
-# ---- Unicode-safe PDF creators for Exam (MCQ), Case, Flashcards ----
+# ---- Unicode-safe PDF creators ----
 def create_exam_pdf(rows, meta) -> str:
     pdf = FPDF()
     pdf.set_auto_page_break(auto=True, margin=15)
@@ -284,7 +284,7 @@ def create_flash_pdf(cards, meta) -> str:
     filepath = os.path.join(CHEATSHEET_PATH, filename)
     pdf.output(filepath); return filepath
 
-# --- PDF Generation Class (cheatsheet; unchanged) ---------------------------
+# --- PDF Generation Class (cheatsheet) ---------------------------
 class PDF(FPDF):
     def __init__(self, topic, *args, **kwargs):
         super().__init__(*args, **kwargs)
@@ -570,7 +570,7 @@ def render_exam_ui():
 
     topic = st.text_input("Topic for MCQs (ophthalmology only)", placeholder="e.g., Primary open-angle glaucoma", key="mcq_topic")
 
-    # ---- Controls row (aligned with label-height spacer) ----
+    # ---- Controls row (button aligned via CSS helper) ----
     c_num, c_diff, c_btn = st.columns([1, 1, 1], gap="small")
     with c_num:
         num_q = st.number_input("Number of MCQs", min_value=1, max_value=20, value=5, step=1, key="mcq_num")
@@ -583,7 +583,7 @@ def render_exam_ui():
             help="Adjust MCQ complexity"
         )
     with c_btn:
-        st.markdown("<span class='form-label-spacer'></span>", unsafe_allow_html=True)
+        st.markdown("<div class='row-align'>", unsafe_allow_html=True)
         if st.button("Generate MCQs", use_container_width=True, type="primary", key="mcq_generate"):
             with st.spinner("Generating MCQs…"):
                 mcqs = generate_mcqs(topic or "general ophthalmology", int(num_q), difficulty)
@@ -596,6 +596,7 @@ def render_exam_ui():
                 "difficulty": difficulty
             }
             st.rerun()
+        st.markdown("</div>", unsafe_allow_html=True)
 
     exam_state = st.session_state.get("exam", None)
     if not exam_state or not exam_state.get("questions"):
@@ -674,7 +675,7 @@ def render_exam_ui():
 
     st.markdown("</div>", unsafe_allow_html=True)  # close .exam-scope
 
-# ============================ CASE MODE (with difficulty) ====================
+# ============================ CASE MODE ====================
 def generate_case(topic: str, difficulty: str = "medium"):
     diff = difficulty if difficulty in DIFF_LEVELS else "medium"
     guide = DIFF_GUIDE_CASE[diff]
@@ -741,7 +742,6 @@ def render_case_ui():
 
     topic = st.text_input("Case focus (ophthalmology only)", placeholder="e.g., Painless vision loss · CRAO vs. NAION")
 
-    # two columns (difficulty + aligned button)
     c1, c2 = st.columns([1, 1], gap="small")
     with c1:
         difficulty = st.selectbox(
@@ -752,7 +752,7 @@ def render_case_ui():
             help="Adjust case complexity"
         )
     with c2:
-        st.markdown("<span class='form-label-spacer'></span>", unsafe_allow_html=True)
+        st.markdown("<div class='row-align'>", unsafe_allow_html=True)
         if st.button("Generate Case", type="primary", use_container_width=True):
             with st.spinner("Generating case…"):
                 c = generate_case(topic or "general ophthalmology", difficulty)
@@ -764,6 +764,7 @@ def render_case_ui():
                 "generated_at": datetime.utcnow().isoformat() + "Z"
             }
             st.rerun()
+        st.markdown("</div>", unsafe_allow_html=True)
 
     case_state = st.session_state.get("case", None)
     if not case_state:
@@ -861,7 +862,7 @@ def render_case_ui():
                 mime="application/pdf", use_container_width=True
             )
 
-# ============================= FLASHCARDS MODE (checkbox flip) ===============
+# ============================= FLASHCARDS MODE ===============================
 def _escape_html(s: str) -> str:
     return s.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
 
@@ -907,7 +908,7 @@ def render_flash_dashboard(fs):
 def render_flash_ui():
     st.markdown("<div class='topbar-custom'>Flashcards Mode · Rapid Recall</div>", unsafe_allow_html=True)
 
-    # Flip card styles + swipe script — checkbox-based flip (robust in Streamlit)
+    # Flip card styles + swipe script (checkbox-based flip)
     st.markdown(f"""
     <style>
       #flash-scope .flip-wrap {{ perspective: 1200px; width: min(720px, 95%); margin: 0 auto 0.75rem auto; }}
@@ -957,12 +958,11 @@ def render_flash_ui():
 
     topic = st.text_input("Flashcards topic (ophthalmology only)", placeholder="e.g., Glaucoma medications")
 
-    # aligned controls row
     c_num, c_btn = st.columns([1, 1], gap="small")
     with c_num:
         num_cards = st.number_input("Cards", min_value=3, max_value=40, value=10, step=1)
     with c_btn:
-        st.markdown("<span class='form-label-spacer'></span>", unsafe_allow_html=True)
+        st.markdown("<div class='row-align'>", unsafe_allow_html=True)
         if st.button("Generate Deck", type="primary", use_container_width=True, key="gen_flash"):
             with st.spinner("Building your deck…"):
                 deck = generate_flashcards(topic or "general ophthalmology", int(num_cards))
@@ -973,6 +973,7 @@ def render_flash_ui():
                 "idx": 0
             }
             st.rerun()
+        st.markdown("</div>", unsafe_allow_html=True)
 
     fs = st.session_state.get("flash", None)
     if not fs or not fs.get("cards"):
@@ -986,7 +987,6 @@ def render_flash_ui():
     if idx >= total: idx = total - 1
     st.session_state.flash["idx"] = idx
 
-    # Dashboard
     def _dash(fs_):
         total = len(fs_["cards"])
         reviewed = sum(1 for c in fs_["cards"] if c.get("mark") is not None)
@@ -1003,7 +1003,6 @@ def render_flash_ui():
     _dash(fs)
     st.markdown("<br/>", unsafe_allow_html=True)
 
-    # Current card (checkbox+label; always reset to front on render)
     card = fs["cards"][idx]
     front = _escape_html(card["front"])
     back  = _escape_html(card["back"])
@@ -1027,15 +1026,9 @@ def render_flash_ui():
         </label>
       </div>
     </div>
-    <script>
-      (function(){{
-        var chk = document.getElementById("{flip_id}");
-        if (chk) chk.checked = false;
-      }})();
-    </script>
+    <script>(function(){{var c=document.getElementById("{flip_id}"); if(c) c.checked=false;}})();</script>
     """, unsafe_allow_html=True)
 
-    # Controls
     left, mid, right = st.columns([1,1,1])
     with left:
         if st.button("👍 I got it", key=f"fc_right_{idx}", use_container_width=True):
@@ -1058,7 +1051,6 @@ def render_flash_ui():
     st.markdown("<br/>", unsafe_allow_html=True)
     _dash(st.session_state.flash)
 
-    # Downloads
     rows = []
     for i, c in enumerate(st.session_state.flash["cards"]):
         m = c.get("mark")
@@ -1136,14 +1128,10 @@ st.markdown(f"""
     .case-body {{ opacity:.95; }}
     .case-instr {{ margin:.6em 0 .3em 0; font-weight:600; }}
 
-    /* NEW: label-height spacer to align buttons with labeled widgets */
-    .form-label-spacer{{
-      display:block;
-      height:2.25rem;
-      margin-bottom:.35rem;
-    }}
-    @media (max-width: 900px){{
-      .form-label-spacer{{ height:2.0rem; }}
+    /* Robust vertical alignment for buttons next to labeled widgets */
+    .row-align .stButton>button {{ margin-top: 2.15rem !important; }}
+    @media (max-width: 900px) {{
+      .row-align .stButton>button {{ margin-top: .25rem !important; }}
     }}
 
     @media only screen and (max-width: 768px) {{ .topbar-custom {{ font-size: 1.1rem; padding: .9em; text-align: center; }} .msg-user, .msg-bot {{ font-size: 0.95rem; max-width: 95%; }} }}
@@ -1257,7 +1245,6 @@ elif st.session_state.mode == "Case":
 elif st.session_state.mode == "Flashcards":
     render_flash_ui()
 else:
-    # Baseline Chat behavior (domain-gated) and Teaching (if selected) share this path
     user_prompt = None
     if st.session_state.voice_enabled and (st.session_state.mode in ["Teaching"] or st.session_state.mode is None):
         user_prompt = speech_to_text(language=st.session_state.input_accent, use_container_width=True, just_once=True, key='STT')
