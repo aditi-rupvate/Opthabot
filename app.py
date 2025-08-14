@@ -509,7 +509,6 @@ def render_option_badges(q_idx, opts, correct_idx, selected_idx):
                     unsafe_allow_html=True)
 
 def render_exam_ui():
-    # Scoped CSS for Exam mode (improved option formatting)
     st.markdown(f"""
     <style>
       .exam-scope .card {{
@@ -517,8 +516,6 @@ def render_exam_ui():
         border-radius:14px; padding:1em 1.1em; border:1px solid {THEME['border']};
       }}
       .exam-scope .card-title {{ font-weight:700; margin-bottom:.6em; }}
-
-      /* PRE-SELECTION buttons */
       .exam-scope .stButton>button {{
         width:100% !important;
         text-align:left;
@@ -531,8 +528,6 @@ def render_exam_ui():
         line-height:1.2; white-space:normal; word-break:break-word;
       }}
       .exam-scope .stButton>button:hover {{ transform: translateY(-1px); }}
-
-      /* POST-SELECTION badges */
       .exam-scope .option {{
         margin:.35em 0; padding:.7em .85em; border:1px solid {THEME['border']};
         border-radius:12px; background:{THEME['bg']};
@@ -541,13 +536,11 @@ def render_exam_ui():
       }}
       .exam-scope .option.correct {{ background:#0e4d2e; color:#fff; border-color:#2ea043; }}
       .exam-scope .option.wrong   {{ background:#6b2222; color:#fff; border-color:#f85149; }}
-
       .exam-scope .chip {{
         display:inline-flex; align-items:center; justify-content:center;
         width:28px; height:28px; border-radius:999px; font-weight:700;
         border:1px solid {THEME['border']}; flex:0 0 28px;
       }}
-
       .exam-scope .gridgap > div > div {{ margin-bottom:.35rem; }}
       @media (max-width: 900px) {{
         .exam-scope [data-testid="column"] {{ width:100% !important; flex:1 0 100% !important; }}
@@ -589,7 +582,6 @@ def render_exam_ui():
         selected = exam_state["selected"].get(i, None)
 
         if selected is None:
-            # BEFORE selection: two-column button grid with spacing wrapper
             bcols = st.columns(2, gap="small")
             for j, opt in enumerate(q["options"]):
                 with bcols[j % 2]:
@@ -600,7 +592,6 @@ def render_exam_ui():
                         st.rerun()
                     st.markdown("</div>", unsafe_allow_html=True)
         else:
-            # AFTER selection: colored badges + feedback
             render_option_badges(i, q["options"], q["correct_index"], selected)
             if selected == q["correct_index"]:
                 st.markdown("<div class='explain good'>Correct ✅</div>", unsafe_allow_html=True)
@@ -608,12 +599,11 @@ def render_exam_ui():
                 st.markdown("<div class='explain bad'>Not quite ❌</div>", unsafe_allow_html=True)
             st.markdown(f"<div class='explain note'><b>Why:</b> {q['explanation']}</div>", unsafe_allow_html=True)
 
-        st.markdown("</div>", unsafe_allow_html=True)  # end card
+        st.markdown("</div>", unsafe_allow_html=True)
         st.markdown("<br/>", unsafe_allow_html=True)
 
     render_exam_dashboard(st.session_state.exam)
 
-    # Downloads (CSV + PDF only)
     rows = []
     for i, q in enumerate(st.session_state.exam["questions"]):
         sel = st.session_state.exam["selected"].get(i, None)
@@ -651,8 +641,6 @@ def render_exam_ui():
                 data=f.read(), file_name=os.path.basename(pdf_path),
                 mime="application/pdf", use_container_width=True
             )
-
-    st.markdown("</div>", unsafe_allow_html=True)  # close .exam-scope
 
 # ============================ CASE MODE (with extra spinners) =================
 
@@ -716,7 +704,6 @@ def render_case_ui():
     c1, c2 = st.columns([1, 1])
     with c1:
         if st.button("Generate Case", type="primary", use_container_width=True):
-            # Spinner while the LLM creates the vignette
             with st.spinner("Generating case…"):
                 c = generate_case(topic or "general ophthalmology")
             st.session_state.case = {
@@ -728,7 +715,6 @@ def render_case_ui():
             }
             st.rerun()
 
-    # If no case yet, show a gentle prompt and a quick loading cue
     case_state = st.session_state.get("case", None)
     if not case_state:
         with st.spinner("Loading case mode…"):
@@ -736,7 +722,6 @@ def render_case_ui():
         st.info("Enter a focus and click **Generate Case** to start.")
         return
 
-    # Scenario card
     c = case_state["case"]
     st.markdown(
         f"""
@@ -748,7 +733,6 @@ def render_case_ui():
         unsafe_allow_html=True
     )
 
-    # Learner input
     st.markdown("<div class='case-instr'>Write your impression and next steps (investigations/initial management).</div>", unsafe_allow_html=True)
     st.session_state.case["response"] = st.text_area(
         "Your response",
@@ -757,14 +741,12 @@ def render_case_ui():
         placeholder="Type your reasoning here…"
     )
 
-    # Submit for grading (spinner while the LLM evaluates)
     if st.button("Submit Answer", type="primary", use_container_width=True):
         with st.spinner("Scoring your response…"):
             fb, sc = evaluate_case_response(c["scenario"], c.get("key_points", []), st.session_state.case["response"])
         st.session_state.case["graded"] = {"feedback": fb, "score": sc}
         st.rerun()
 
-    # Show feedback if graded
     graded = case_state.get("graded")
     if graded:
         strengths = graded["feedback"].get("strengths", [])
@@ -791,7 +773,6 @@ def render_case_ui():
             st.caption(f"Scoring note: {score_exp}")
         st.markdown("</div>", unsafe_allow_html=True)
 
-        # Downloads — spinner for PDF creation (CSV is instant)
         payload = {
             "topic": case_state.get("topic"),
             "generated_at": case_state.get("generated_at"),
@@ -800,7 +781,6 @@ def render_case_ui():
             "feedback": graded["feedback"], "score": graded["score"]
         }
 
-        # CSV (single-row)
         csv_buf = io.StringIO()
         fields = ["topic","generated_at","title","scenario","learner_response","strengths","missed","suggestions","score","score_note"]
         writer = csv.DictWriter(csv_buf, fieldnames=fields); writer.writeheader()
@@ -830,7 +810,7 @@ def render_case_ui():
                 mime="application/pdf", use_container_width=True
             )
 
-# ============================= FLASHCARDS MODE ===============================
+# ============================= FLASHCARDS MODE (flip + swipe) ================
 
 def generate_flashcards(topic: str, num_cards: int = 10):
     prompt = PromptTemplate.from_template(
@@ -855,7 +835,7 @@ Keep strictly to ophthalmology.
     cards = []
     for c in data.get("cards", [])[:num_cards]:
         if isinstance(c, dict) and "front" in c and "back" in c:
-            cards.append({"front": str(c["front"]).strip(), "back": str(c["back"]).strip(), "revealed": False, "mark": None})
+            cards.append({"front": str(c["front"]).strip(), "back": str(c["back"]).strip(), "mark": None})
     return cards
 
 def render_flash_dashboard(fs):
@@ -871,8 +851,106 @@ def render_flash_dashboard(fs):
     c4.metric("Incorrect", incorrect)
     c5.metric("Remaining", remaining)
 
+def _escape_html(s: str) -> str:
+    return s.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+
 def render_flash_ui():
     st.markdown("<div class='topbar-custom'>Flashcards Mode · Rapid Recall</div>", unsafe_allow_html=True)
+
+    # Flip card styles + swipe script (scoped to #flash-scope)
+    st.markdown(f"""
+    <style>
+      #flash-scope .flip-wrap {{
+        perspective: 1200px;
+        width: min(720px, 95%);
+        margin: 0 auto 0.75rem auto;
+      }}
+      #flash-scope .flip-card {{
+        display: block;
+        width: 100%;
+        height: 320px;
+        border-radius: 18px;
+        border: 1px solid {THEME['border']};
+        background: linear-gradient(135deg, #1a2233 0%, #2a3550 100%);
+        box-shadow: 0 10px 28px rgba(0,0,0,.25);
+        position: relative;
+        cursor: pointer;
+        outline: none;
+      }}
+      #flash-scope .flip-card-inner {{
+        position: relative;
+        width: 100%;
+        height: 100%;
+        transform-style: preserve-3d;
+        transition: transform .55s cubic-bezier(.2,.7,.2,1);
+      }}
+      #flash-scope input[type="checkbox"] {{ display:none; }}
+      #flash-scope input[type="checkbox"]:checked + label .flip-card-inner {{
+        transform: rotateY(180deg);
+      }}
+      #flash-scope .side {{
+        position: absolute; inset: 0;
+        backface-visibility: hidden;
+        border-radius: 18px;
+        display: flex; flex-direction: column; justify-content: center; align-items: center;
+        padding: 1.2rem;
+        color: #f6f7fb;
+      }}
+      #flash-scope .front {{ }}
+      #flash-scope .back {{ transform: rotateY(180deg); background: linear-gradient(135deg, #26375b 0%, #1e2a45 100%); }}
+      #flash-scope .front .hint, #flash-scope .back .hint {{
+        position: absolute; bottom: 12px; opacity: .85; font-size: .95rem;
+      }}
+      #flash-scope .front .hint::before {{
+        content: "Tap to reveal";
+      }}
+      #flash-scope .back .hint::before {{
+        content: "Swipe up for next";
+      }}
+      #flash-scope .front .q, #flash-scope .back .a {{
+        max-width: 92%;
+        text-align: center;
+        font-size: 1.15rem;
+        line-height: 1.35;
+        white-space: pre-wrap; word-break: break-word;
+      }}
+      #flash-scope .controls {{
+        width:min(720px,95%); margin:.5rem auto 0 auto;
+        display:flex; gap:.5rem;
+      }}
+      #flash-scope .controls .stButton>button {{
+        border-radius: 12px;
+      }}
+    </style>
+    <script>
+      (function(){{
+        // Basic swipe-up detection inside flash-scope that clicks the "Next card" Streamlit button
+        let startY = null;
+        const scope = document.getElementById('flash-scope');
+        if(!scope) return;
+        scope.addEventListener('touchstart', function(e) {{
+          if(!e.changedTouches || !e.changedTouches.length) return;
+          startY = e.changedTouches[0].clientY;
+        }}, {{passive:true}});
+        scope.addEventListener('touchend', function(e) {{
+          if(startY === null) return;
+          const endY = e.changedTouches[0].clientY;
+          if(startY - endY > 50) {{
+            const btns = Array.from(document.querySelectorAll('button')).filter(b => b.innerText.trim() === 'Next card');
+            if(btns.length) btns[0].click();
+          }}
+          startY = null;
+        }}, {{passive:true}});
+        // Also allow Space / ArrowUp to advance
+        scope.addEventListener('keyup', function(e){{
+          if(e.key === ' ' || e.key === 'ArrowUp') {{
+            const btns = Array.from(document.querySelectorAll('button')).filter(b => b.innerText.trim() === 'Next card');
+            if(btns.length) btns[0].click();
+          }}
+        }});
+      }})();
+    </script>
+    """, unsafe_allow_html=True)
 
     topic = st.text_input("Flashcards topic (ophthalmology only)", placeholder="e.g., Glaucoma medications")
     colX, colY = st.columns([1,1])
@@ -885,7 +963,8 @@ def render_flash_ui():
             st.session_state.flash = {
                 "topic": topic or "general ophthalmology",
                 "generated_at": datetime.utcnow().isoformat() + "Z",
-                "cards": deck
+                "cards": deck,
+                "idx": 0
             }
             st.rerun()
 
@@ -894,30 +973,63 @@ def render_flash_ui():
         st.info("Enter a topic and click **Generate Deck** to begin.")
         return
 
+    # Ensure index bounds
+    idx = int(fs.get("idx", 0))
+    total = len(fs["cards"])
+    if idx < 0: idx = 0
+    if idx >= total: idx = total - 1
+    st.session_state.flash["idx"] = idx
+
     render_flash_dashboard(fs)
     st.markdown("<br/>", unsafe_allow_html=True)
 
-    # Card list
-    for i, c in enumerate(fs["cards"]):
-        st.markdown(f"<div class='card'><div class='card-title'>Card {i+1}</div>", unsafe_allow_html=True)
-        st.markdown(c["front"])
-        if not c.get("revealed"):
-            if st.button("Reveal answer", key=f"reveal_fc_{i}", use_container_width=True):
-                with st.spinner("Revealing…"):
-                    st.session_state.flash["cards"][i]["revealed"] = True
-                st.rerun()
-        else:
-            st.markdown(f"<div class='explain note'><b>Answer:</b> {c['back']}</div>", unsafe_allow_html=True)
-            b1, b2 = st.columns(2)
-            if b1.button("👍 I got it", key=f"right_{i}", use_container_width=True):
-                st.session_state.flash["cards"][i]["mark"] = True
-                st.rerun()
-            if b2.button("👎 Not yet", key=f"wrong_{i}", use_container_width=True):
-                st.session_state.flash["cards"][i]["mark"] = False
-                st.rerun()
-        st.markdown("</div>", unsafe_allow_html=True)
-        st.markdown("<br/>", unsafe_allow_html=True)
+    # Current card
+    card = fs["cards"][idx]
+    front = _escape_html(card["front"])
+    back = _escape_html(card["back"])
 
+    st.markdown(f"""
+    <div id="flash-scope" tabindex="0">
+      <div class="flip-wrap">
+        <input id="flipcheck" type="checkbox" />
+        <label class="flip-card" for="flipcheck" aria-label="Flashcard (tap to flip)">
+          <div class="flip-card-inner">
+            <div class="side front">
+              <div class="q">{front}</div>
+              <div class="hint"></div>
+            </div>
+            <div class="side back">
+              <div class="a">{back}</div>
+              <div class="hint"></div>
+            </div>
+          </div>
+        </label>
+      </div>
+    </div>
+    """, unsafe_allow_html=True)
+
+    # Controls: mark + next
+    left, mid, right = st.columns([1,1,1])
+    with left:
+        if st.button("👍 I got it", key=f"fc_right_{idx}", use_container_width=True):
+            st.session_state.flash["cards"][idx]["mark"] = True
+            if idx < total - 1:
+                st.session_state.flash["idx"] = idx + 1
+            st.rerun()
+    with mid:
+        if st.button("👎 Not yet", key=f"fc_wrong_{idx}", use_container_width=True):
+            st.session_state.flash["cards"][idx]["mark"] = False
+            if idx < total - 1:
+                st.session_state.flash["idx"] = idx + 1
+            st.rerun()
+    with right:
+        if st.button("Next card", key=f"fc_next_{idx}", use_container_width=True):
+            if idx < total - 1:
+                st.session_state.flash["idx"] = idx + 1
+            st.rerun()
+
+    # Progress again under the card
+    st.markdown("<br/>", unsafe_allow_html=True)
     render_flash_dashboard(st.session_state.flash)
 
     # Downloads
@@ -989,7 +1101,7 @@ st.markdown(f"""
     .explain.bad {{ color:#f85149; font-weight:600; }}
     .explain.note {{ opacity:.9; }}
     .msg-user {{ background: {THEME['user']}; color: {THEME['text']}; border-radius: 16px 16px 4px 20px; margin-bottom: 0.3em; padding: 1em 1.35em; width: fit-content; max-width: 85%; font-size: 1.13rem; border: 1.5px solid {THEME['border']}; margin-left: auto; margin-right: 0; text-align: right; box-shadow: 0 1px 12px 0 rgba(55,96,148,0.05); }}
-    .msg-bot {{ background: {THEME['bot']}; color: {THEME['text']}; border-radius: 16px 16px 20px 4px; margin-bottom: 0.7em; padding: 1.08em 1.23em 1em 1.18em; width: fit-content; max-width: 85%; font-size: 1.13rem; border: 1.5px solid {THEME['border']}; margin-right: auto; margin-left: 0; text-align: left; box-shadow: 0 1px 12px 0 rgba(44,46,66,0.05); }}
+    .msg-bot {{ background: {THEME['bot']}; color: {THEME['text']}; border-radius: 16px 16px 20px 4px; margin-bottom: 0.7em; padding: 1.08em 1.23em 1em 1.18em; width: fit-content; max-width: 85%; font-size: 1.13rem; border: 1.5px solid {THEME['border']}; }}
     [data-testid="stExpander"] {{ border-color: {THEME['border']}; background: {THEME['expander']}; }}
     .stButton>button {{ width:100%; padding:.70em 1em; margin:.25rem 0 !important; border-radius:12px; }}
     .note-text {{ color: #787878; font-size: 0.9rem; }}
