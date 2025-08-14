@@ -284,7 +284,7 @@ def create_flash_pdf(cards, meta) -> str:
     filepath = os.path.join(CHEATSHEET_PATH, filename)
     pdf.output(filepath); return filepath
 
-# --- PDF Generation Class (cheatsheet) ---------------------------
+# --- PDF for cheatsheet content ---------------------------------------------
 class PDF(FPDF):
     def __init__(self, topic, *args, **kwargs):
         super().__init__(*args, **kwargs)
@@ -591,7 +591,7 @@ def render_exam_ui():
                 "topic": topic or "general ophthalmology",
                 "generated_at": datetime.utcnow().isoformat() + "Z",
                 "questions": mcqs,
-                "selected": {},   # q_idx -> opt_idx
+                "selected": {},
                 "score": 0,
                 "difficulty": difficulty
             }
@@ -1018,48 +1018,62 @@ def render_flash_ui():
     </div>
 
     <script>
-      (function(){{
-        var card = document.getElementById("{card_id}");
-        // Always start front-side up:
-        if (card) card.classList.remove("flipped");
+    (function(){{
+      const card = document.getElementById("{card_id}");
+      const nextHost = document.getElementById("{next_host_id}");
+      const scope = document.getElementById("flash-scope");
+      if (!card) return;
 
-        // Toggle flip on tap/click or SPACE
-        function toggleFlip() {{
-          if (!card) return;
-          if (card.classList.contains("flipped")) {{
-            card.classList.remove("flipped");
-          }} else {{
-            card.classList.add("flipped");
+      // Always start front-side up (twice to avoid race with transitions)
+      card.classList.remove("flipped");
+      requestAnimationFrame(() => card.classList.remove("flipped"));
+
+      const goNext = () => {{
+        const btn = nextHost && nextHost.querySelector("button");
+        if (btn) btn.click();
+      }};
+      const toggleFlip = () => card.classList.toggle("flipped");
+
+      // Click flips
+      card.addEventListener("click", toggleFlip, {{ passive: true }});
+
+      // Keyboard: Space toggles; Enter/ArrowRight go NEXT if back visible; Esc returns to front
+      card.addEventListener("keydown", (e) => {{
+        const k = e.key || e.code;
+        if (k === " " || k === "Space" || k === "Spacebar") {{
+          e.preventDefault();
+          toggleFlip();
+        }} else if ((k === "Enter" || k === "ArrowRight") && card.classList.contains("flipped")) {{
+          e.preventDefault();
+          goNext();
+        }} else if (k === "Escape") {{
+          e.preventDefault();
+          card.classList.remove("flipped");
+        }}
+      }});
+
+      // Swipe up to NEXT (only when flipped, mostly-vertical, quick gesture)
+      let startY = null, startX = null, startT = 0;
+      if (scope) {{
+        scope.addEventListener("touchstart", (e) => {{
+          if (!e.changedTouches || !e.changedTouches.length) return;
+          const t = e.changedTouches[0];
+          startY = t.clientY; startX = t.clientX; startT = Date.now();
+        }}, {{ passive: true }});
+
+        scope.addEventListener("touchend", (e) => {{
+          if (startY === null) return;
+          const t = e.changedTouches[0];
+          const dy = startY - t.clientY;
+          const dx = Math.abs(startX - t.clientX);
+          const dt = Date.now() - startT;
+          if (card.classList.contains("flipped") && dy > 40 && dx < 60 && dt < 800) {{
+            goNext();
           }}
-        }}
-        if (card) {{
-          card.addEventListener("click", function(){{ toggleFlip(); }});
-          card.addEventListener("keyup", function(e){{ if (e.key === " ") toggleFlip(); }});
-        }}
-
-        // Swipe up to go next ONLY when back side is visible
-        let startY = null;
-        const scope = document.getElementById('flash-scope');
-        if (scope) {{
-          scope.addEventListener('touchstart', function(e) {{
-            if (!e.changedTouches || !e.changedTouches.length) return;
-            startY = e.changedTouches[0].clientY;
-          }}, {{passive:true}});
-          scope.addEventListener('touchend', function(e) {{
-            if (startY === null) return;
-            const endY = e.changedTouches[0].clientY;
-            const delta = startY - endY;
-            if (delta > 50 && card && card.classList.contains('flipped')) {{
-              const host = document.getElementById('{next_host_id}');
-              if (host) {{
-                const btn = host.querySelector('button');
-                if (btn) btn.click();
-              }}
-            }}
-            startY = null;
-          }}, {{passive:true}});
-        }}
-      }})();
+          startY = null;
+        }}, {{ passive: true }});
+      }}
+    }})();
     </script>
     """, unsafe_allow_html=True)
 
