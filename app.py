@@ -158,7 +158,7 @@ def render_audio_player_b64(audio_b64: str):
     """
     st.markdown(audio_html, unsafe_allow_html=True)
 
-# ---- Unicode-safe PDF creators for Exam, Case, Flashcards ----
+# ---- Unicode-safe PDF creators for Exam (MCQ), Case, Flashcards ----
 def create_exam_pdf(rows, meta) -> str:
     pdf = FPDF()
     pdf.set_auto_page_break(auto=True, margin=15)
@@ -429,7 +429,7 @@ def handle_query_logic(query: str, session_id: str = None):
 
     return final_answer, pdf_filename
 
-# ============================= EXAM MODE =====================================
+# ============================= Helpers =======================================
 
 def _parse_json_block(text: str):
     try:
@@ -444,6 +444,8 @@ def _parse_json_block(text: str):
             return None
     return None
 
+# ============================= EXAM: MCQ ONLY ================================
+
 def generate_mcqs(topic: str, num_q: int = 5):
     prompt = PromptTemplate.from_template(
         """You are an ophthalmology exam item writer.
@@ -453,16 +455,16 @@ Constraints:
 - 4 options (A–D). Exactly one correct.
 - Provide a 1–2 line explanation.
 - Output ONLY JSON as:
-{{
+{
   "mcqs": [
-    {{
+    {
       "question": "...",
       "options": ["...", "...", "...", "..."],
       "correct_index": 0,
       "explanation": "..."
-    }}
+    }
   ]
-}}
+}
 """
     )
     chain = LLMChain(llm=llm, prompt=prompt)
@@ -551,12 +553,12 @@ def render_exam_ui():
     st.markdown("<div class='topbar-custom'>Exam Mode · MCQ Practice</div>", unsafe_allow_html=True)
     st.markdown("<div class='exam-scope'>", unsafe_allow_html=True)
 
-    topic = st.text_input("Topic for MCQs (ophthalmology only)", placeholder="e.g., Primary open-angle glaucoma")
+    topic = st.text_input("Topic for MCQs (ophthalmology only)", placeholder="e.g., Primary open-angle glaucoma", key="mcq_topic")
     cols = st.columns([1, 1, 2])
     with cols[0]:
-        num_q = st.number_input("Number of MCQs", min_value=1, max_value=20, value=5, step=1)
+        num_q = st.number_input("Number of MCQs", min_value=1, max_value=20, value=5, step=1, key="mcq_num")
     with cols[1]:
-        if st.button("Generate MCQs", use_container_width=True, type="primary"):
+        if st.button("Generate MCQs", use_container_width=True, type="primary", key="mcq_generate"):
             with st.spinner("Generating MCQs…"):
                 mcqs = generate_mcqs(topic or "general ophthalmology", int(num_q))
             st.session_state.exam = {
@@ -642,7 +644,9 @@ def render_exam_ui():
                 mime="application/pdf", use_container_width=True
             )
 
-# ============================ CASE MODE (with extra spinners) =================
+    st.markdown("</div>", unsafe_allow_html=True)  # close .exam-scope
+
+# ============================ CASE MODE (with spinners) ======================
 
 def generate_case(topic: str):
     prompt = PromptTemplate.from_template(
@@ -653,11 +657,11 @@ Include:
 - scenario (2–5 sentences)
 - key_points: list of 5–8 bullet keywords (diagnosis+workup+management targets)
 Output ONLY JSON as:
-{{
+{
   "title": "...",
   "scenario": "...",
   "key_points": ["...", "...", "..."]
-}}
+}
 """
     )
     chain = LLMChain(llm=llm, prompt=prompt)
@@ -677,17 +681,17 @@ Rubric key points (target ideas): {rubric}
 Learner response: {answer}
 
 Return ONLY JSON as:
-{{
-  "feedback": {{
+{
+  "feedback": {
     "strengths": ["...", "..."],
     "missed": ["...", "..."],
     "suggestions": "one concise paragraph with practical advice"
-  }},
-  "score": {{
+  },
+  "score": {
     "achieved": <int 0-100>,
     "explanation": "one line on how the score was decided"
-  }}
-}}
+  }
+}
 """
     )
     chain = LLMChain(llm=llm, prompt=prompt)
@@ -812,6 +816,9 @@ def render_case_ui():
 
 # ============================= FLASHCARDS MODE (flip + swipe) ================
 
+def _escape_html(s: str) -> str:
+    return s.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+
 def generate_flashcards(topic: str, num_cards: int = 10):
     prompt = PromptTemplate.from_template(
         """You are an ophthalmology educator.
@@ -820,12 +827,12 @@ Each card should have:
 - "front": a short prompt/question (max 18 words)
 - "back": a crisp, high-yield answer (1–3 bullet lines or a short paragraph)
 Output ONLY JSON:
-{{
+{
   "cards": [
-    {{"front":"...", "back":"..."}},
+    {"front":"...", "back":"..."},
     ...
   ]
-}}
+}
 Keep strictly to ophthalmology.
 """
     )
@@ -851,80 +858,29 @@ def render_flash_dashboard(fs):
     c4.metric("Incorrect", incorrect)
     c5.metric("Remaining", remaining)
 
-def _escape_html(s: str) -> str:
-    return s.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
-
 def render_flash_ui():
     st.markdown("<div class='topbar-custom'>Flashcards Mode · Rapid Recall</div>", unsafe_allow_html=True)
 
     # Flip card styles + swipe script (scoped to #flash-scope)
     st.markdown(f"""
     <style>
-      #flash-scope .flip-wrap {{
-        perspective: 1200px;
-        width: min(720px, 95%);
-        margin: 0 auto 0.75rem auto;
-      }}
-      #flash-scope .flip-card {{
-        display: block;
-        width: 100%;
-        height: 320px;
-        border-radius: 18px;
-        border: 1px solid {THEME['border']};
-        background: linear-gradient(135deg, #1a2233 0%, #2a3550 100%);
-        box-shadow: 0 10px 28px rgba(0,0,0,.25);
-        position: relative;
-        cursor: pointer;
-        outline: none;
-      }}
-      #flash-scope .flip-card-inner {{
-        position: relative;
-        width: 100%;
-        height: 100%;
-        transform-style: preserve-3d;
-        transition: transform .55s cubic-bezier(.2,.7,.2,1);
-      }}
+      #flash-scope .flip-wrap {{ perspective: 1200px; width: min(720px, 95%); margin: 0 auto 0.75rem auto; }}
+      #flash-scope .flip-card {{ display: block; width: 100%; height: 320px; border-radius: 18px; border: 1px solid {THEME['border']};
+        background: linear-gradient(135deg, #1a2233 0%, #2a3550 100%); box-shadow: 0 10px 28px rgba(0,0,0,.25); position: relative; cursor: pointer; outline: none; }}
+      #flash-scope .flip-card-inner {{ position: relative; width: 100%; height: 100%; transform-style: preserve-3d; transition: transform .55s cubic-bezier(.2,.7,.2,1); }}
       #flash-scope input[type="checkbox"] {{ display:none; }}
-      #flash-scope input[type="checkbox"]:checked + label .flip-card-inner {{
-        transform: rotateY(180deg);
-      }}
-      #flash-scope .side {{
-        position: absolute; inset: 0;
-        backface-visibility: hidden;
-        border-radius: 18px;
-        display: flex; flex-direction: column; justify-content: center; align-items: center;
-        padding: 1.2rem;
-        color: #f6f7fb;
-      }}
-      #flash-scope .front {{ }}
+      #flash-scope input[type="checkbox"]:checked + label .flip-card-inner {{ transform: rotateY(180deg); }}
+      #flash-scope .side {{ position: absolute; inset: 0; backface-visibility: hidden; border-radius: 18px; display: flex; flex-direction: column; justify-content: center; align-items: center; padding: 1.2rem; color: #f6f7fb; }}
       #flash-scope .back {{ transform: rotateY(180deg); background: linear-gradient(135deg, #26375b 0%, #1e2a45 100%); }}
-      #flash-scope .front .hint, #flash-scope .back .hint {{
-        position: absolute; bottom: 12px; opacity: .85; font-size: .95rem;
-      }}
-      #flash-scope .front .hint::before {{
-        content: "Tap to reveal";
-      }}
-      #flash-scope .back .hint::before {{
-        content: "Swipe up for next";
-      }}
-      #flash-scope .front .q, #flash-scope .back .a {{
-        max-width: 92%;
-        text-align: center;
-        font-size: 1.15rem;
-        line-height: 1.35;
-        white-space: pre-wrap; word-break: break-word;
-      }}
-      #flash-scope .controls {{
-        width:min(720px,95%); margin:.5rem auto 0 auto;
-        display:flex; gap:.5rem;
-      }}
-      #flash-scope .controls .stButton>button {{
-        border-radius: 12px;
-      }}
+      #flash-scope .front .hint, #flash-scope .back .hint {{ position: absolute; bottom: 12px; opacity: .85; font-size: .95rem; }}
+      #flash-scope .front .hint::before {{ content: "Tap to reveal"; }}
+      #flash-scope .back .hint::before {{ content: "Swipe up for next"; }}
+      #flash-scope .front .q, #flash-scope .back .a {{ max-width: 92%; text-align: center; font-size: 1.15rem; line-height: 1.35; white-space: pre-wrap; word-break: break-word; }}
+      #flash-scope .controls {{ width:min(720px,95%); margin:.5rem auto 0 auto; display:flex; gap:.5rem; }}
+      #flash-scope .controls .stButton>button {{ border-radius: 12px; }}
     </style>
     <script>
       (function(){{
-        // Basic swipe-up detection inside flash-scope that clicks the "Next card" Streamlit button
         let startY = null;
         const scope = document.getElementById('flash-scope');
         if(!scope) return;
@@ -941,7 +897,6 @@ def render_flash_ui():
           }}
           startY = null;
         }}, {{passive:true}});
-        // Also allow Space / ArrowUp to advance
         scope.addEventListener('keyup', function(e){{
           if(e.key === ' ' || e.key === 'ArrowUp') {{
             const btns = Array.from(document.querySelectorAll('button')).filter(b => b.innerText.trim() === 'Next card');
@@ -980,19 +935,34 @@ def render_flash_ui():
     if idx >= total: idx = total - 1
     st.session_state.flash["idx"] = idx
 
-    render_flash_dashboard(fs)
+    # Small dashboard
+    def _dash(fs_):
+        total = len(fs_["cards"])
+        reviewed = sum(1 for c in fs_["cards"] if c.get("mark") is not None)
+        correct = sum(1 for c in fs_["cards"] if c.get("mark") is True)
+        incorrect = sum(1 for c in fs_["cards"] if c.get("mark") is False)
+        remaining = max(0, total - reviewed)
+        c1, c2, c3, c4, c5 = st.columns(5)
+        c1.metric("Total", total)
+        c2.metric("Reviewed", reviewed)
+        c3.metric("Correct", correct)
+        c4.metric("Incorrect", incorrect)
+        c5.metric("Remaining", remaining)
+
+    _dash(fs)
     st.markdown("<br/>", unsafe_allow_html=True)
 
-    # Current card
+    # Current card with flip (unique id + reset to front)
     card = fs["cards"][idx]
     front = _escape_html(card["front"])
-    back = _escape_html(card["back"])
+    back  = _escape_html(card["back"])
+    flip_id = f"flipcheck_{idx}_{uuid.uuid4().hex[:6]}"
 
     st.markdown(f"""
     <div id="flash-scope" tabindex="0">
       <div class="flip-wrap">
-        <input id="flipcheck" type="checkbox" />
-        <label class="flip-card" for="flipcheck" aria-label="Flashcard (tap to flip)">
+        <input id="{flip_id}" type="checkbox" />
+        <label class="flip-card" for="{flip_id}" aria-label="Flashcard (tap to flip)">
           <div class="flip-card-inner">
             <div class="side front">
               <div class="q">{front}</div>
@@ -1006,9 +976,15 @@ def render_flash_ui():
         </label>
       </div>
     </div>
+    <script>
+      (function(){{
+        var el = document.getElementById("{flip_id}");
+        if (el) el.checked = false; // always start unflipped
+      }})();
+    </script>
     """, unsafe_allow_html=True)
 
-    # Controls: mark + next
+    # Controls
     left, mid, right = st.columns([1,1,1])
     with left:
         if st.button("👍 I got it", key=f"fc_right_{idx}", use_container_width=True):
@@ -1028,9 +1004,8 @@ def render_flash_ui():
                 st.session_state.flash["idx"] = idx + 1
             st.rerun()
 
-    # Progress again under the card
     st.markdown("<br/>", unsafe_allow_html=True)
-    render_flash_dashboard(st.session_state.flash)
+    _dash(st.session_state.flash)
 
     # Downloads
     rows = []
@@ -1081,7 +1056,8 @@ if "voice_enabled" not in st.session_state: st.session_state.voice_enabled = Fal
 if "input_accent" not in st.session_state: st.session_state.input_accent = 'en-US'
 if "output_accent" not in st.session_state: st.session_state.output_accent = 'com'
 if "teaching_mode" not in st.session_state: st.session_state.teaching_mode = False
-if "mode" not in st.session_state: st.session_state.mode = "Chat"
+# IMPORTANT: No default "Chat" mode anymore; baseline = None (acts as Chat)
+if "mode" not in st.session_state: st.session_state.mode = None
 
 THEME = DARK if st.session_state.theme == "dark" else LIGHT
 
@@ -1124,20 +1100,31 @@ with st.sidebar:
         st.session_state.theme = "dark" if toggled else "light"; st.rerun()
 
     st.header("Modes")
-    st.session_state.mode = st.radio(
-        "Choose mode",
-        options=["Chat", "Teaching", "Exam", "Case", "Flashcards"],
-        index=["Chat", "Teaching", "Exam", "Case", "Flashcards"].index(st.session_state.mode) if st.session_state.mode in ["Chat","Teaching","Exam","Case","Flashcards"] else 0,
-        help="Switch between chat, tutor-style, MCQ practice, case simulations, or flashcards.",
-        key="mode_radio"
+
+    allowed_modes = ["Teaching", "Exam", "Case", "Flashcards"]
+    # Toggle controls whether the user *activates* a mode; if off, baseline (Chat) is active.
+    enable_modes = st.toggle(
+        "Enable study modes",
+        value=st.session_state.mode in allowed_modes,
+        help="Turn on to select Teaching, Exam, Case, or Flashcards."
     )
+    if enable_modes:
+        st.session_state.mode = st.radio(
+            "Choose mode",
+            options=allowed_modes,
+            index=allowed_modes.index(st.session_state.mode) if st.session_state.mode in allowed_modes else 0,
+            help="Switch between tutor-style, MCQ exam practice, case simulations, or flashcards.",
+            key="mode_radio"
+        )
+    else:
+        st.session_state.mode = None  # baseline Chat behavior
 
     st.divider()
     st.session_state.teaching_mode = (st.session_state.mode == "Teaching")
 
     st.header("Voice Settings")
     st.session_state.voice_enabled = st.toggle("Enable Voice Chat", value=st.session_state.voice_enabled, help="Enable voice input and spoken responses.")
-    if st.session_state.voice_enabled and st.session_state.mode in ["Chat", "Teaching"]:
+    if st.session_state.voice_enabled and (st.session_state.mode in ["Teaching"] or st.session_state.mode is None):
         input_accent_options = {
             'American (US)': 'en-US', 'British (UK)': 'en-GB', 'Indian': 'en-IN',
             'Australian': 'en-AU', 'Canadian': 'en-CA', 'South African': 'en-ZA'
@@ -1154,8 +1141,8 @@ with st.sidebar:
             index=list(output_accent_options.values()).index(st.session_state.output_accent)
         )]
 
-# --- Chat history (Chat/Teaching) -------------------------------------------
-if st.session_state.mode in ["Chat", "Teaching"]:
+# --- Chat history (baseline/Teaching) ---------------------------------------
+if (st.session_state.mode in ["Teaching"]) or (st.session_state.mode is None):
     for entry in st.session_state.chat_history:
         if "user" in entry:
             st.markdown(f"<div class='msg-user'>{entry['user']}</div>", unsafe_allow_html=True)
@@ -1202,8 +1189,9 @@ elif st.session_state.mode == "Case":
 elif st.session_state.mode == "Flashcards":
     render_flash_ui()
 else:
+    # Baseline Chat behavior (domain-gated) and Teaching (if selected) share this path
     user_prompt = None
-    if st.session_state.voice_enabled:
+    if st.session_state.voice_enabled and (st.session_state.mode in ["Teaching"] or st.session_state.mode is None):
         user_prompt = speech_to_text(language=st.session_state.input_accent, use_container_width=True, just_once=True, key='STT')
     else:
         user_prompt = st.chat_input("Type your question here...")
@@ -1216,7 +1204,7 @@ else:
             clean_text = re.sub(r'<.*?>', '', answer); raw_answer_text = clean_text.replace('`', '').replace('*', '')
             full_answer_html = f"{answer}<br><span class='note-text'>{disclaimer_text}</span>"
             st.markdown(f"<div class='msg-bot'>{full_answer_html}</div>", unsafe_allow_html=True)
-            if st.session_state.voice_enabled:
+            if st.session_state.voice_enabled and (st.session_state.mode in ["Teaching"] or st.session_state.mode is None):
                 spoken_text = raw_answer_text + " Anything you'd like to explore next?"
                 audio_b64 = text_to_audio_b64(spoken_text, st.session_state.output_accent)
                 if audio_b64: render_audio_player_b64(audio_b64)
