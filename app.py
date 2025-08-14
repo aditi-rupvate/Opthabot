@@ -22,6 +22,9 @@ from streamlit_mic_recorder import speech_to_text
 from gtts import gTTS
 from langchain.memory import ConversationBufferMemory
 
+# --- Streamlit page config (early) ---
+st.set_page_config(layout="centered")
+
 # --- 1. Configuration ---
 GOOGLE_API_KEY = st.secrets.get("GOOGLE_API_KEY", "YOUR_DEFAULT_API_KEY_HERE")
 FAISS_INDEX_PATH = "oxford_handbook_kb"
@@ -164,34 +167,61 @@ def render_audio_player_b64(audio_b64: str):
     """
     st.markdown(audio_html, unsafe_allow_html=True)
 
-# --- Helpers: PDF creators for Exam & Case downloads -------------------------
+# ---- Unicode-safe PDF creators for Exam & Case downloads ----
 def create_exam_pdf(rows, meta) -> str:
     """Create a PDF summarizing an MCQ session. Returns file path."""
     pdf = FPDF()
     pdf.set_auto_page_break(auto=True, margin=15)
     pdf.add_page()
-    pdf.set_font("Helvetica", "B", 16)
-    pdf.cell(0, 10, "Ophthalmology MCQ Session", ln=1)
-    pdf.set_font("Helvetica", "", 11)
-    meta_line = f"Topic: {meta.get('topic','-')}  |  Score: {meta.get('score',0)}/{meta.get('total',0)}  |  Attempted: {meta.get('attempted',0)}  |  Generated: {meta.get('generated_at','')}"
-    pdf.multi_cell(0, 6, meta_line)
+
+    # Try full Unicode; fall back to Latin-1 safe
+    try:
+        pdf.add_font("DejaVu", "", "DejaVuSans.ttf", uni=True)
+        pdf.add_font("DejaVu", "B", "DejaVuSans-Bold.ttf", uni=True)
+        FONT = "DejaVu"
+        unicode_ok = True
+    except RuntimeError:
+        FONT = "Helvetica"
+        unicode_ok = False
+
+    def safe(txt: str) -> str:
+        if unicode_ok:
+            return txt
+        return txt.encode("latin-1", "ignore").decode("latin-1")
+
+    check = "✔ " if unicode_ok else "[OK] "
+    cross = "✖ " if unicode_ok else "[X] "
+
+    pdf.set_font(FONT, "B", 16)
+    pdf.cell(0, 10, safe("Ophthalmology MCQ Session"), ln=1)
+
+    pdf.set_font(FONT, "", 11)
+    meta_line = (
+        f"Topic: {meta.get('topic','-')}  |  "
+        f"Score: {meta.get('score',0)}/{meta.get('total',0)}  |  "
+        f"Attempted: {meta.get('attempted',0)}  |  "
+        f"Generated: {meta.get('generated_at','')}"
+    )
+    pdf.multi_cell(0, 6, safe(meta_line))
     pdf.ln(2)
+
     for r in rows:
-        pdf.set_font("Helvetica", "B", 12)
-        pdf.multi_cell(0, 7, f"Q{r['index']}. {r['question']}")
-        pdf.set_font("Helvetica", "", 11)
-        for key in ["A","B","C","D"]:
-            mark = ""
+        pdf.set_font(FONT, "B", 12)
+        pdf.multi_cell(0, 7, safe(f"Q{r['index']}. {r['question']}"))
+        pdf.set_font(FONT, "", 11)
+        for key in ["A", "B", "C", "D"]:
+            prefix = ""
             if r["correct"] == key:
-                mark = "✔ "
+                prefix = check
             if r["selected"] == key and r["selected"] != r["correct"]:
-                mark = "✖ "
-            pdf.multi_cell(0, 6, f"{mark}{key}. {r[key]}")
-        pdf.set_font("Helvetica", "I", 10)
-        pdf.set_text_color(60,60,60)
-        pdf.multi_cell(0, 5, f"Why: {r['explanation']}")
-        pdf.set_text_color(0,0,0)
+                prefix = cross
+            pdf.multi_cell(0, 6, safe(f"{prefix}{key}. {r[key]}"))
+        pdf.set_font(FONT, "I", 10)
+        pdf.set_text_color(60, 60, 60)
+        pdf.multi_cell(0, 5, safe(f"Why: {r['explanation']}"))
+        pdf.set_text_color(0, 0, 0)
         pdf.ln(2)
+
     filename = f"exam_mcqs_{datetime.utcnow().strftime('%Y%m%d_%H%M%S')}.pdf"
     filepath = os.path.join(CHEATSHEET_PATH, filename)
     pdf.output(filepath)
@@ -202,37 +232,60 @@ def create_case_pdf(payload) -> str:
     pdf = FPDF()
     pdf.set_auto_page_break(auto=True, margin=15)
     pdf.add_page()
-    pdf.set_font("Helvetica", "B", 16)
-    pdf.cell(0, 10, "Ophthalmology Case Interaction", ln=1)
-    pdf.set_font("Helvetica", "", 11)
-    pdf.multi_cell(0, 6, f"Topic: {payload.get('topic','-')}")
-    pdf.multi_cell(0, 6, f"Generated: {payload.get('generated_at','')}")
+
+    # Try full Unicode; fall back to Latin-1 safe
+    try:
+        pdf.add_font("DejaVu", "", "DejaVuSans.ttf", uni=True)
+        pdf.add_font("DejaVu", "B", "DejaVuSans-Bold.ttf", uni=True)
+        FONT = "DejaVu"
+        unicode_ok = True
+    except RuntimeError:
+        FONT = "Helvetica"
+        unicode_ok = False
+
+    def safe(txt: str) -> str:
+        if unicode_ok:
+            return txt
+        return txt.encode("latin-1", "ignore").decode("latin-1")
+
+    pdf.set_font(FONT, "B", 16)
+    pdf.cell(0, 10, safe("Ophthalmology Case Interaction"), ln=1)
+
+    pdf.set_font(FONT, "", 11)
+    pdf.multi_cell(0, 6, safe(f"Topic: {payload.get('topic','-')}"))
+    pdf.multi_cell(0, 6, safe(f"Generated: {payload.get('generated_at','')}"))
     pdf.ln(2)
-    pdf.set_font("Helvetica", "B", 12)
-    pdf.multi_cell(0, 7, f"Title: {payload.get('title','')}")
-    pdf.set_font("Helvetica", "", 11)
-    pdf.multi_cell(0, 6, f"Scenario: {payload.get('scenario','')}")
+
+    pdf.set_font(FONT, "B", 12)
+    pdf.multi_cell(0, 7, safe(f"Title: {payload.get('title','')}"))
+    pdf.set_font(FONT, "", 11)
+    pdf.multi_cell(0, 6, safe(f"Scenario: {payload.get('scenario','')}"))
     pdf.ln(1)
-    pdf.set_font("Helvetica", "B", 12)
-    pdf.multi_cell(0, 7, "Your Response")
-    pdf.set_font("Helvetica", "", 11)
-    pdf.multi_cell(0, 6, payload.get("learner_response",""))
+
+    pdf.set_font(FONT, "B", 12)
+    pdf.multi_cell(0, 7, safe("Your Response"))
+    pdf.set_font(FONT, "", 11)
+    pdf.multi_cell(0, 6, safe(payload.get("learner_response","")))
+
     fb = payload.get("feedback", {})
     strengths = fb.get("strengths", [])
     missed = fb.get("missed", [])
-    suggestions = fb.get("suggestions","")
+    suggestions = fb.get("suggestions", "")
+
     pdf.ln(2)
-    pdf.set_font("Helvetica", "B", 12); pdf.multi_cell(0, 7, "Feedback")
-    pdf.set_font("Helvetica", "", 11)
+    pdf.set_font(FONT, "B", 12); pdf.multi_cell(0, 7, safe("Feedback"))
+    pdf.set_font(FONT, "", 11)
     if strengths:
-        pdf.multi_cell(0, 6, "What you did well: " + "; ".join(strengths))
+        pdf.multi_cell(0, 6, safe("What you did well: " + "; ".join(strengths)))
     if missed:
-        pdf.multi_cell(0, 6, "What to add next time: " + "; ".join(missed))
+        pdf.multi_cell(0, 6, safe("What to add next time: " + "; ".join(missed)))
     if suggestions:
-        pdf.multi_cell(0, 6, "Suggestions: " + suggestions)
+        pdf.multi_cell(0, 6, safe("Suggestions: " + suggestions))
+
     sc = payload.get("score", {})
     pdf.ln(1)
-    pdf.multi_cell(0, 6, f"Score: {sc.get('achieved',0)}/100 — {sc.get('explanation','')}")
+    pdf.multi_cell(0, 6, safe(f"Score: {sc.get('achieved',0)}/100 — {sc.get('explanation','')}"))
+
     filename = f"case_interaction_{datetime.utcnow().strftime('%Y%m%d_%H%M%S')}.pdf"
     filepath = os.path.join(CHEATSHEET_PATH, filename)
     pdf.output(filepath)
@@ -527,7 +580,6 @@ def render_exam_ui():
         if selected is None:
             # BEFORE selection: show clickable buttons only
             bcols = st.columns(2)
-            # tighter spacing for buttons handled via CSS below
             for j, opt in enumerate(q["options"]):
                 if bcols[j % 2].button(f"{chr(65+j)}. {opt}", key=f"mcq_{i}_{j}"):
                     st.session_state.exam["selected"][i] = j
@@ -564,7 +616,6 @@ def render_exam_ui():
             "explanation": q["explanation"]
         })
 
-    # CSV
     if rows:
         csv_buf = io.StringIO()
         writer = csv.DictWriter(csv_buf, fieldnames=list(rows[0].keys()))
@@ -578,7 +629,6 @@ def render_exam_ui():
             use_container_width=True
         )
 
-        # PDF
         meta = {
             "topic": st.session_state.exam.get("topic"),
             "generated_at": st.session_state.exam.get("generated_at"),
@@ -770,9 +820,7 @@ def render_case_ui():
                 use_container_width=True
             )
 
-# --- Streamlit UI ---
-st.set_page_config(layout="centered")
-
+# --- Theme Palettes ---
 LIGHT = {"bg": "#f8fafb", "bar": "#fff", "bot": "#e9eef6", "user": "#d1e7dd", "text": "#191b22", "input": "#e8edf2", "border": "#d4dde7", "expander": "#f4f7fb"}
 DARK = {"bg": "#202126", "bar": "#232733", "bot": "#232733", "user": "#22577a", "text": "#f3f5f8", "input": "#242730", "border": "#26282f", "expander": "#24272e"}
 
@@ -902,7 +950,7 @@ if st.session_state.active_doc_name:
         st.rerun()
 
 # --- Main areas per MODE -----------------------------------------------------
-def render_exam_ui_proxy():  # tiny wrapper just to keep section tidy
+def render_exam_ui_proxy():
     render_exam_ui()
 
 if st.session_state.mode == "Exam":
