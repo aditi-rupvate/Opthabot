@@ -460,7 +460,7 @@ def render_exam_ui():
                 "selected": {},   # q_idx -> opt_idx
                 "score": 0
             }
-            st.experimental_rerun()
+            st.rerun()
 
     exam_state = st.session_state.get("exam", None)
     if not exam_state or not exam_state.get("questions"):
@@ -481,7 +481,7 @@ def render_exam_ui():
         for j, opt in enumerate(q["options"]):
             if bcols[j % 2].button(f"{chr(65+j)}. {opt}", key=f"mcq_{i}_{j}"):
                 st.session_state.exam["selected"][i] = j
-                st.experimental_rerun()
+                st.rerun()
 
         # colored badges after selection
         render_option_badges(i, q["options"], q["correct_index"], selected)
@@ -619,7 +619,7 @@ def render_case_ui():
                 "graded": None,
                 "generated_at": datetime.utcnow().isoformat() + "Z"
             }
-            st.experimental_rerun()
+            st.rerun()
 
     case_state = st.session_state.get("case", None)
     if not case_state:
@@ -643,7 +643,7 @@ def render_case_ui():
     if st.button("Submit Answer", type="primary", use_container_width=True):
         fb, sc = evaluate_case_response(c["scenario"], c.get("key_points", []), st.session_state.case["response"])
         st.session_state.case["graded"] = {"feedback": fb, "score": sc}
-        st.experimental_rerun()
+        st.rerun()
 
     graded = case_state.get("graded")
     if graded:
