@@ -158,7 +158,7 @@ def render_audio_player_b64(audio_b64: str):
     """
     st.markdown(audio_html, unsafe_allow_html=True)
 
-# ---- Unicode-safe PDF creators for Exam & Case downloads ----
+# ---- Unicode-safe PDF creators for Exam, Case, Flashcards ----
 def create_exam_pdf(rows, meta) -> str:
     pdf = FPDF()
     pdf.set_auto_page_break(auto=True, margin=15)
@@ -246,6 +246,41 @@ def create_case_pdf(payload) -> str:
     sc = payload.get("score", {})
     pdf.ln(1); pdf.multi_cell(0, 6, safe(f"Score: {sc.get('achieved',0)}/100 — {sc.get('explanation','')}"))
     filename = f"case_interaction_{datetime.utcnow().strftime('%Y%m%d_%H%M%S')}.pdf"
+    filepath = os.path.join(CHEATSHEET_PATH, filename)
+    pdf.output(filepath); return filepath
+
+def create_flash_pdf(cards, meta) -> str:
+    pdf = FPDF()
+    pdf.set_auto_page_break(auto=True, margin=15)
+    pdf.add_page()
+    try:
+        pdf.add_font("DejaVu", "", "DejaVuSans.ttf", uni=True)
+        pdf.add_font("DejaVu", "B", "DejaVuSans-Bold.ttf", uni=True)
+        FONT = "DejaVu"; unicode_ok = True
+    except RuntimeError:
+        FONT = "Helvetica"; unicode_ok = False
+    def safe(t): return t if unicode_ok else t.encode("latin-1","ignore").decode("latin-1")
+    check = "✔" if unicode_ok else "OK"
+    cross = "✖" if unicode_ok else "X"
+
+    pdf.set_font(FONT, "B", 16); pdf.cell(0, 10, safe("Ophthalmology Flashcards"), ln=1)
+    pdf.set_font(FONT, "", 11)
+    hdr = f"Topic: {meta.get('topic','-')} | Reviewed: {meta.get('reviewed',0)}/{meta.get('total',0)} | Correct: {meta.get('correct',0)} | Generated: {meta.get('generated_at','')}"
+    pdf.multi_cell(0, 6, safe(hdr)); pdf.ln(2)
+
+    for i, c in enumerate(cards, start=1):
+        pdf.set_font(FONT, "B", 12)
+        pdf.multi_cell(0, 7, safe(f"Card {i}: {c['front']}"))
+        pdf.set_font(FONT, "", 11)
+        pdf.multi_cell(0, 6, safe("Answer: " + c["back"]))
+        m = c.get("mark")
+        if m is True:
+            pdf.multi_cell(0, 6, safe(f"Marked: {check} Correct"))
+        elif m is False:
+            pdf.multi_cell(0, 6, safe(f"Marked: {cross} Incorrect"))
+        pdf.ln(2)
+
+    filename = f"flashcards_{datetime.utcnow().strftime('%Y%m%d_%H%M%S')}.pdf"
     filepath = os.path.join(CHEATSHEET_PATH, filename)
     pdf.output(filepath); return filepath
 
@@ -619,7 +654,7 @@ def render_exam_ui():
 
     st.markdown("</div>", unsafe_allow_html=True)  # close .exam-scope
 
-# ============================ CASE MODE ======================================
+# ============================ CASE MODE (with extra spinners) =================
 
 def generate_case(topic: str):
     prompt = PromptTemplate.from_template(
@@ -660,7 +695,7 @@ Return ONLY JSON as:
     "missed": ["...", "..."],
     "suggestions": "one concise paragraph with practical advice"
   }},
-    "score": {{
+  "score": {{
     "achieved": <int 0-100>,
     "explanation": "one line on how the score was decided"
   }}
@@ -681,20 +716,27 @@ def render_case_ui():
     c1, c2 = st.columns([1, 1])
     with c1:
         if st.button("Generate Case", type="primary", use_container_width=True):
+            # Spinner while the LLM creates the vignette
             with st.spinner("Generating case…"):
                 c = generate_case(topic or "general ophthalmology")
             st.session_state.case = {
                 "topic": topic or "general ophthalmology",
-                "case": c, "response": "", "graded": None,
+                "case": c,
+                "response": "",
+                "graded": None,
                 "generated_at": datetime.utcnow().isoformat() + "Z"
             }
             st.rerun()
 
+    # If no case yet, show a gentle prompt and a quick loading cue
     case_state = st.session_state.get("case", None)
     if not case_state:
+        with st.spinner("Loading case mode…"):
+            time.sleep(0.3)
         st.info("Enter a focus and click **Generate Case** to start.")
         return
 
+    # Scenario card
     c = case_state["case"]
     st.markdown(
         f"""
@@ -702,18 +744,27 @@ def render_case_ui():
             <div class='case-title'>{c['title']}</div>
             <div class='case-body'>{c['scenario']}</div>
         </div>
-        """, unsafe_allow_html=True
+        """,
+        unsafe_allow_html=True
     )
 
+    # Learner input
     st.markdown("<div class='case-instr'>Write your impression and next steps (investigations/initial management).</div>", unsafe_allow_html=True)
-    st.session_state.case["response"] = st.text_area("Your response", value=case_state.get("response", ""), height=160, placeholder="Type your reasoning here…")
+    st.session_state.case["response"] = st.text_area(
+        "Your response",
+        value=case_state.get("response", ""),
+        height=160,
+        placeholder="Type your reasoning here…"
+    )
 
+    # Submit for grading (spinner while the LLM evaluates)
     if st.button("Submit Answer", type="primary", use_container_width=True):
         with st.spinner("Scoring your response…"):
             fb, sc = evaluate_case_response(c["scenario"], c.get("key_points", []), st.session_state.case["response"])
         st.session_state.case["graded"] = {"feedback": fb, "score": sc}
         st.rerun()
 
+    # Show feedback if graded
     graded = case_state.get("graded")
     if graded:
         strengths = graded["feedback"].get("strengths", [])
@@ -740,6 +791,7 @@ def render_case_ui():
             st.caption(f"Scoring note: {score_exp}")
         st.markdown("</div>", unsafe_allow_html=True)
 
+        # Downloads — spinner for PDF creation (CSV is instant)
         payload = {
             "topic": case_state.get("topic"),
             "generated_at": case_state.get("generated_at"),
@@ -748,8 +800,9 @@ def render_case_ui():
             "feedback": graded["feedback"], "score": graded["score"]
         }
 
+        # CSV (single-row)
         csv_buf = io.StringIO()
-        fields = ["topic", "generated_at", "title", "scenario", "learner_response", "strengths", "missed", "suggestions", "score", "score_note"]
+        fields = ["topic","generated_at","title","scenario","learner_response","strengths","missed","suggestions","score","score_note"]
         writer = csv.DictWriter(csv_buf, fieldnames=fields); writer.writeheader()
         writer.writerow({
             "topic": payload["topic"], "generated_at": payload["generated_at"],
@@ -767,11 +820,138 @@ def render_case_ui():
             file_name=f"case_interaction_{datetime.utcnow().strftime('%Y%m%d_%H%M%S')}.csv",
             mime="text/csv", use_container_width=True
         )
+
         with st.spinner("Preparing PDF…"):
             pdf_path = create_case_pdf(payload)
         with open(pdf_path, "rb") as f:
             st.download_button(
                 "📥 Download Case Interaction (PDF)",
+                data=f.read(), file_name=os.path.basename(pdf_path),
+                mime="application/pdf", use_container_width=True
+            )
+
+# ============================= FLASHCARDS MODE ===============================
+
+def generate_flashcards(topic: str, num_cards: int = 10):
+    prompt = PromptTemplate.from_template(
+        """You are an ophthalmology educator.
+Create {num} concise flashcards for quick revision on: "{topic}".
+Each card should have:
+- "front": a short prompt/question (max 18 words)
+- "back": a crisp, high-yield answer (1–3 bullet lines or a short paragraph)
+Output ONLY JSON:
+{{
+  "cards": [
+    {{"front":"...", "back":"..."}},
+    ...
+  ]
+}}
+Keep strictly to ophthalmology.
+"""
+    )
+    chain = LLMChain(llm=llm, prompt=prompt)
+    raw = chain.run(topic=topic or "general ophthalmology", num=num_cards)
+    data = _parse_json_block(raw) or {"cards": []}
+    cards = []
+    for c in data.get("cards", [])[:num_cards]:
+        if isinstance(c, dict) and "front" in c and "back" in c:
+            cards.append({"front": str(c["front"]).strip(), "back": str(c["back"]).strip(), "revealed": False, "mark": None})
+    return cards
+
+def render_flash_dashboard(fs):
+    total = len(fs["cards"])
+    reviewed = sum(1 for c in fs["cards"] if c.get("mark") is not None)
+    correct = sum(1 for c in fs["cards"] if c.get("mark") is True)
+    incorrect = sum(1 for c in fs["cards"] if c.get("mark") is False)
+    remaining = max(0, total - reviewed)
+    c1, c2, c3, c4, c5 = st.columns(5)
+    c1.metric("Total", total)
+    c2.metric("Reviewed", reviewed)
+    c3.metric("Correct", correct)
+    c4.metric("Incorrect", incorrect)
+    c5.metric("Remaining", remaining)
+
+def render_flash_ui():
+    st.markdown("<div class='topbar-custom'>Flashcards Mode · Rapid Recall</div>", unsafe_allow_html=True)
+
+    topic = st.text_input("Flashcards topic (ophthalmology only)", placeholder="e.g., Glaucoma medications")
+    colX, colY = st.columns([1,1])
+    with colX:
+        num_cards = st.number_input("Cards", min_value=3, max_value=40, value=10, step=1)
+    with colY:
+        if st.button("Generate Deck", type="primary", use_container_width=True, key="gen_flash"):
+            with st.spinner("Building your deck…"):
+                deck = generate_flashcards(topic or "general ophthalmology", int(num_cards))
+            st.session_state.flash = {
+                "topic": topic or "general ophthalmology",
+                "generated_at": datetime.utcnow().isoformat() + "Z",
+                "cards": deck
+            }
+            st.rerun()
+
+    fs = st.session_state.get("flash", None)
+    if not fs or not fs.get("cards"):
+        st.info("Enter a topic and click **Generate Deck** to begin.")
+        return
+
+    render_flash_dashboard(fs)
+    st.markdown("<br/>", unsafe_allow_html=True)
+
+    # Card list
+    for i, c in enumerate(fs["cards"]):
+        st.markdown(f"<div class='card'><div class='card-title'>Card {i+1}</div>", unsafe_allow_html=True)
+        st.markdown(c["front"])
+        if not c.get("revealed"):
+            if st.button("Reveal answer", key=f"reveal_fc_{i}", use_container_width=True):
+                with st.spinner("Revealing…"):
+                    st.session_state.flash["cards"][i]["revealed"] = True
+                st.rerun()
+        else:
+            st.markdown(f"<div class='explain note'><b>Answer:</b> {c['back']}</div>", unsafe_allow_html=True)
+            b1, b2 = st.columns(2)
+            if b1.button("👍 I got it", key=f"right_{i}", use_container_width=True):
+                st.session_state.flash["cards"][i]["mark"] = True
+                st.rerun()
+            if b2.button("👎 Not yet", key=f"wrong_{i}", use_container_width=True):
+                st.session_state.flash["cards"][i]["mark"] = False
+                st.rerun()
+        st.markdown("</div>", unsafe_allow_html=True)
+        st.markdown("<br/>", unsafe_allow_html=True)
+
+    render_flash_dashboard(st.session_state.flash)
+
+    # Downloads
+    rows = []
+    for i, c in enumerate(st.session_state.flash["cards"]):
+        m = c.get("mark")
+        rows.append({
+            "index": i+1,
+            "front": c["front"],
+            "back": c["back"],
+            "marked": "" if m is None else ("correct" if m else "incorrect")
+        })
+    if rows:
+        csv_buf = io.StringIO()
+        writer = csv.DictWriter(csv_buf, fieldnames=list(rows[0].keys()))
+        writer.writeheader(); writer.writerows(rows)
+        st.download_button(
+            "📥 Download Flashcards (CSV)",
+            data=csv_buf.getvalue().encode("utf-8"),
+            file_name=f"flashcards_{datetime.utcnow().strftime('%Y%m%d_%H%M%S')}.csv",
+            mime="text/csv", use_container_width=True
+        )
+        meta = {
+            "topic": st.session_state.flash.get("topic"),
+            "generated_at": st.session_state.flash.get("generated_at"),
+            "total": len(st.session_state.flash.get("cards", [])),
+            "reviewed": sum(1 for c in st.session_state.flash.get("cards", []) if c.get("mark") is not None),
+            "correct": sum(1 for c in st.session_state.flash.get("cards", []) if c.get("mark") is True)
+        }
+        with st.spinner("Preparing PDF…"):
+            pdf_path = create_flash_pdf(st.session_state.flash["cards"], meta)
+        with open(pdf_path, "rb") as f:
+            st.download_button(
+                "📥 Download Flashcards (PDF)",
                 data=f.read(), file_name=os.path.basename(pdf_path),
                 mime="application/pdf", use_container_width=True
             )
@@ -834,9 +1014,9 @@ with st.sidebar:
     st.header("Modes")
     st.session_state.mode = st.radio(
         "Choose mode",
-        options=["Chat", "Teaching", "Exam", "Case"],
-        index=["Chat", "Teaching", "Exam", "Case"].index(st.session_state.mode),
-        help="Switch between regular chat, tutor-style, MCQ exam practice, or case simulations.",
+        options=["Chat", "Teaching", "Exam", "Case", "Flashcards"],
+        index=["Chat", "Teaching", "Exam", "Case", "Flashcards"].index(st.session_state.mode) if st.session_state.mode in ["Chat","Teaching","Exam","Case","Flashcards"] else 0,
+        help="Switch between chat, tutor-style, MCQ practice, case simulations, or flashcards.",
         key="mode_radio"
     )
 
@@ -907,6 +1087,8 @@ if st.session_state.mode == "Exam":
     render_exam_ui_proxy()
 elif st.session_state.mode == "Case":
     render_case_ui()
+elif st.session_state.mode == "Flashcards":
+    render_flash_ui()
 else:
     user_prompt = None
     if st.session_state.voice_enabled:
@@ -928,7 +1110,7 @@ else:
                 if audio_b64: render_audio_player_b64(audio_b64)
             if pdf_filename:
                 pdf_path = os.path.join(CHEATSHEET_PATH, pdf_filename)
-                if os.path.exists(pdf_path):
+                if os.path.exists(pdf_path,):
                     with open(pdf_path, "rb") as pdf_file:
                         st.download_button("📥 Download Cheatsheet", pdf_file.read(), pdf_filename, "application/pdf", key=f"dl_{pdf_filename}_{uuid.uuid4()}")
             st.session_state.chat_history.append({"bot": full_answer_html, "pdf_filename": pdf_filename})
