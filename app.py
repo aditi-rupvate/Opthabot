@@ -65,12 +65,29 @@ def _is_greeting(text: str) -> bool:
     t = text.lower().strip()
     return any(re.search(p, t) for p in GREETING_PATTERNS)
 def _is_ophthalmology(text: str) -> bool:
+    if not text:  # guard for None/empty
+        return False
     t = text.lower()
     return any(k in t for k in OPHTH_KEYWORDS)
+
+# Common refusal used everywhere
 DOMAIN_REFUSAL = (
     "I'm specialised in ophthalmology (eye care) and basic greetings only. "
     "Please ask an eye-related question."
 )
+
+# Helper: validate a topic field before generation in modes
+def _topic_allowed_or_warn(topic: str) -> bool:
+    """
+    Returns True if topic is empty (we allow default) or ophthalmology-related.
+    Otherwise shows a warning and returns False.
+    """
+    if topic is None or not topic.strip():
+        return True  # empty -> allowed (we'll use default 'general ophthalmology')
+    if _is_ophthalmology(topic):
+        return True
+    st.warning(DOMAIN_REFUSAL)
+    return False
 
 # --- Backend Components ---
 embeddings = GoogleGenerativeAIEmbeddings(model="models/embedding-001", google_api_key=GOOGLE_API_KEY)
@@ -123,6 +140,7 @@ def text_to_audio_b64(text: str, tld: str) -> str | None:
         return None
 
 def render_audio_player_b64(audio_b64: str):
+    # (kept as-is)
     audio_id = f"audio_{uuid.uuid4().hex}"
     audio_html = f"""
     <audio id="{audio_id}" autoplay playsinline preload="auto"
@@ -333,6 +351,7 @@ def create_formatted_pdf(text_content: str, topic: str) -> str:
 
 # --- RAG/Chat Logic ----------------------------------------------------------
 def handle_query_logic(query: str, session_id: str = None):
+    # Global chat gating
     if _is_greeting(query):
         return "Hello! I’m your ophthalmology-only assistant. How can I help with eyes/vision today?", None
     if not _is_ophthalmology(query):
@@ -453,16 +472,16 @@ Constraints:
 - 4 options (A–D). Exactly one correct.
 - Provide a 1–2 line explanation.
 - Output ONLY JSON as:
-{{
+{
   "mcqs": [
-    {{
+    {
       "question": "...",
       "options": ["...", "...", "...", "..."],
       "correct_index": 0,
       "explanation": "..."
-    }}
+    }
   ]
-}}
+}
 """
     )
     chain = LLMChain(llm=llm, prompt=prompt)
@@ -527,7 +546,6 @@ def render_exam_ui():
         min-height:64px;
         line-height:1.2; white-space:normal; word-break:break-word;
       }}
-      .exam-scope .stButton>button:hover {{ transform: translateY(-1px); }}
       .exam-scope .option {{
         margin:.35em 0; padding:.7em .85em; border:1px solid {THEME['border']};
         border-radius:12px; background:{THEME['bg']};
@@ -557,6 +575,9 @@ def render_exam_ui():
         num_q = st.number_input("Number of MCQs", min_value=1, max_value=20, value=5, step=1)
     with cols[1]:
         if st.button("Generate MCQs", use_container_width=True, type="primary"):
+            # 🔒 Gate: topic must be ophthalmology (or empty -> default allowed)
+            if not _topic_allowed_or_warn(topic):
+                st.stop()
             with st.spinner("Generating MCQs…"):
                 mcqs = generate_mcqs(topic or "general ophthalmology", int(num_q))
             st.session_state.exam = {
@@ -653,11 +674,11 @@ Include:
 - scenario (2–5 sentences)
 - key_points: list of 5–8 bullet keywords (diagnosis+workup+management targets)
 Output ONLY JSON as:
-{{
+{
   "title": "...",
   "scenario": "...",
   "key_points": ["...", "...", "..."]
-}}
+}
 """
     )
     chain = LLMChain(llm=llm, prompt=prompt)
@@ -677,17 +698,17 @@ Rubric key points (target ideas): {rubric}
 Learner response: {answer}
 
 Return ONLY JSON as:
-{{
-  "feedback": {{
+{
+  "feedback": {
     "strengths": ["...", "..."],
     "missed": ["...", "..."],
     "suggestions": "one concise paragraph with practical advice"
-  }},
-  "score": {{
+  },
+  "score": {
     "achieved": <int 0-100>,
     "explanation": "one line on how the score was decided"
-  }}
-}}
+  }
+}
 """
     )
     chain = LLMChain(llm=llm, prompt=prompt)
@@ -704,6 +725,9 @@ def render_case_ui():
     c1, c2 = st.columns([1, 1])
     with c1:
         if st.button("Generate Case", type="primary", use_container_width=True):
+            # 🔒 Gate: topic must be ophthalmology (or empty -> default allowed)
+            if not _topic_allowed_or_warn(topic):
+                st.stop()
             with st.spinner("Generating case…"):
                 c = generate_case(topic or "general ophthalmology")
             st.session_state.case = {
@@ -742,6 +766,7 @@ def render_case_ui():
     )
 
     if st.button("Submit Answer", type="primary", use_container_width=True):
+        # (We don't gate the free-text answer strictly; it's the response to an ophthal case.)
         with st.spinner("Scoring your response…"):
             fb, sc = evaluate_case_response(c["scenario"], c.get("key_points", []), st.session_state.case["response"])
         st.session_state.case["graded"] = {"feedback": fb, "score": sc}
@@ -820,12 +845,12 @@ Each card should have:
 - "front": a short prompt/question (max 18 words)
 - "back": a crisp, high-yield answer (1–3 bullet lines or a short paragraph)
 Output ONLY JSON:
-{{
+{
   "cards": [
-    {{"front":"...", "back":"..."}},
+    {"front":"...", "back":"..."},
     ...
   ]
-}}
+}
 Keep strictly to ophthalmology.
 """
     )
@@ -958,6 +983,9 @@ def render_flash_ui():
         num_cards = st.number_input("Cards", min_value=3, max_value=40, value=10, step=1)
     with colY:
         if st.button("Generate Deck", type="primary", use_container_width=True, key="gen_flash"):
+            # 🔒 Gate: topic must be ophthalmology (or empty -> default allowed)
+            if not _topic_allowed_or_warn(topic):
+                st.stop()
             with st.spinner("Building your deck…"):
                 deck = generate_flashcards(topic or "general ophthalmology", int(num_cards))
             st.session_state.flash = {
@@ -1209,20 +1237,28 @@ else:
         user_prompt = st.chat_input("Type your question here...")
 
     if user_prompt:
-        st.markdown(f"<div class='msg-user'>{user_prompt}</div>", unsafe_allow_html=True)
-        st.session_state.chat_history.append({"user": user_prompt})
-        with st.spinner("Thinking..."):
-            answer, pdf_filename = handle_query_logic(user_prompt, st.session_state.get("session_id"))
-            clean_text = re.sub(r'<.*?>', '', answer); raw_answer_text = clean_text.replace('`', '').replace('*', '')
-            full_answer_html = f"{answer}<br><span class='note-text'>{disclaimer_text}</span>"
-            st.markdown(f"<div class='msg-bot'>{full_answer_html}</div>", unsafe_allow_html=True)
-            if st.session_state.voice_enabled:
-                spoken_text = raw_answer_text + " Anything you'd like to explore next?"
-                audio_b64 = text_to_audio_b64(spoken_text, st.session_state.output_accent)
-                if audio_b64: render_audio_player_b64(audio_b64)
-            if pdf_filename:
-                pdf_path = os.path.join(CHEATSHEET_PATH, pdf_filename)
-                if os.path.exists(pdf_path,):
-                    with open(pdf_path, "rb") as pdf_file:
-                        st.download_button("📥 Download Cheatsheet", pdf_file.read(), pdf_filename, "application/pdf", key=f"dl_{pdf_filename}_{uuid.uuid4()}")
-            st.session_state.chat_history.append({"bot": full_answer_html, "pdf_filename": pdf_filename})
+        # 🔒 Gate here too: only ophthalmology/greetings in Chat/Teaching
+        if not (_is_greeting(user_prompt) or _is_ophthalmology(user_prompt)):
+            st.markdown(f"<div class='msg-user'>{user_prompt}</div>", unsafe_allow_html=True)
+            st.session_state.chat_history.append({"user": user_prompt})
+            refusal = f"{DOMAIN_REFUSAL}<br><span class='note-text'>{disclaimer_text}</span>"
+            st.markdown(f"<div class='msg-bot'>{refusal}</div>", unsafe_allow_html=True)
+            st.session_state.chat_history.append({"bot": refusal})
+        else:
+            st.markdown(f"<div class='msg-user'>{user_prompt}</div>", unsafe_allow_html=True)
+            st.session_state.chat_history.append({"user": user_prompt})
+            with st.spinner("Thinking..."):
+                answer, pdf_filename = handle_query_logic(user_prompt, st.session_state.get("session_id"))
+                clean_text = re.sub(r'<.*?>', '', answer); raw_answer_text = clean_text.replace('`', '').replace('*', '')
+                full_answer_html = f"{answer}<br><span class='note-text'>{disclaimer_text}</span>"
+                st.markdown(f"<div class='msg-bot'>{full_answer_html}</div>", unsafe_allow_html=True)
+                if st.session_state.voice_enabled:
+                    spoken_text = raw_answer_text + " Anything you'd like to explore next?"
+                    audio_b64 = text_to_audio_b64(spoken_text, st.session_state.output_accent)
+                    if audio_b64: render_audio_player_b64(audio_b64)
+                if pdf_filename:
+                    pdf_path = os.path.join(CHEATSHEET_PATH, pdf_filename)
+                    if os.path.exists(pdf_path,):
+                        with open(pdf_path, "rb") as pdf_file:
+                            st.download_button("📥 Download Cheatsheet", pdf_file.read(), pdf_filename, "application/pdf", key=f"dl_{pdf_filename}_{uuid.uuid4()}")
+                st.session_state.chat_history.append({"bot": full_answer_html, "pdf_filename": pdf_filename})
