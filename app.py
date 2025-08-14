@@ -99,7 +99,7 @@ Your explanation: {explanation}
 Return only the single follow-up line:"""
     )
     chain = LLMChain(llm=llm, prompt=tmpl)
-    out = chain.run(user_q=user_q, explanation=explanation).strip()
+    out = chain.invoke({"user_q": user_q, "explanation": explanation})["text"].strip()
     line = re.sub(r"`+", "", out).split("\n")[0]
     line = re.sub(r"\s+", " ", line).strip()
     return line[:200]
@@ -358,14 +358,14 @@ def handle_query_logic(query: str, session_id: str = None):
             "Provide a comprehensive explanation or summary for {topic}.\n\nContext: {context}\nResponse:"
         )
         chain = LLMChain(llm=llm, prompt=prompt_template)
-        return chain.run(topic=topic, context=context)
+        return chain.invoke({"topic": topic, "context": context})["text"]
     def cheatsheet_generator_func(topic: str) -> str:
         context = "\n\n".join([doc.page_content for doc in retriever.get_relevant_documents(topic)])
         prompt_template = PromptTemplate.from_template(
             "Create a detailed cheat sheet for {topic} using '##' for headings and '-' for list items.\nContext: {context}\nCheat Sheet:"
         )
         chain = LLMChain(llm=llm, prompt=prompt_template)
-        cheatsheet_text = chain.run(topic=topic, context=context)
+        cheatsheet_text = chain.invoke({"topic": topic, "context": context})["text"]
         pdf_filename = create_formatted_pdf(cheatsheet_text, topic)
         return f"PDF_GENERATED::{pdf_filename}::{cheatsheet_text}"
 
@@ -492,7 +492,7 @@ def generate_mcqs(topic: str, num_q: int = 5, difficulty: str = "medium"):
         template=template,
     )
     chain = LLMChain(llm=llm, prompt=prompt)
-    raw = chain.run(topic=topic, num=num_q, diff=diff, guide=guide)
+    raw = chain.invoke({"topic": topic, "num": num_q, "diff": diff, "guide": guide})["text"]
     data = _parse_json_block(raw) or {"mcqs": []}
     mcqs = data.get("mcqs", [])
     clean = []
@@ -705,8 +705,8 @@ def generate_case(topic: str, difficulty: str = "medium"):
         template=template,
     )
     chain = LLMChain(llm=llm, prompt=prompt)
-    raw = chain.run(topic=topic or "general ophthalmology", diff=diff, guide=guide)
-    data = _parse_json_block(raw) | {} if isinstance(_parse_json_block(raw), dict) else _parse_json_block(raw) or {}
+    raw = chain.invoke({"topic": topic or "general ophthalmology", "diff": diff, "guide": guide})["text"]
+    data = _parse_json_block(raw) or {}
     title = data.get("title", "Ophthalmology Case")
     scenario = data.get("scenario", "A patient presents to clinic...")
     key_points = data.get("key_points", [])
@@ -737,7 +737,7 @@ def evaluate_case_response(scenario: str, key_points, user_answer: str):
         template=template,
     )
     chain = LLMChain(llm=llm, prompt=prompt)
-    raw = chain.run(scenario=scenario, rubric=rubric, answer=user_answer)
+    raw = chain.invoke({"scenario": scenario, "rubric": rubric, "answer": user_answer})["text"]
     data = _parse_json_block(raw) or {}
     fb = data.get("feedback", {})
     sc = data.get("score", {"achieved": 0, "explanation": ""})
@@ -871,7 +871,7 @@ def _escape_html(s: str) -> str:
     return s.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
 
 def generate_flashcards(topic: str, num_cards: int = 10):
-    # Escape JSON braces with double {{ }} to avoid PromptTemplate parsing
+    # Escape JSON braces with double {{ }} and use .invoke to avoid run() multi-input issues
     template = (
         "You are an ophthalmology educator.\n"
         "Create {num} concise flashcards for quick revision on: \"{topic}\".\n"
@@ -892,7 +892,7 @@ def generate_flashcards(topic: str, num_cards: int = 10):
         template=template,
     )
     chain = LLMChain(llm=llm, prompt=prompt)
-    raw = chain.run(topic=topic or "general ophthalmology", num=int(num_cards))
+    raw = chain.invoke({"topic": topic or "general ophthalmology", "num": int(num_cards)})["text"]
     data = _parse_json_block(raw) or {"cards": []}
     cards = []
     for c in data.get("cards", [])[: int(num_cards)]:
@@ -1146,6 +1146,39 @@ st.markdown(f"""
 
 st.markdown("<div class='topbar-custom'>Ophtha Bot : AI Chatbot for Postgrad Ophthalmology Students</div>", unsafe_allow_html=True)
 
+# === TOP: Upload file (moved from sidebar) ===================================
+def render_top_uploader():
+    st.markdown("<div class='card'><div class='card-title'>Upload a Custom Document</div>", unsafe_allow_html=True)
+    uploaded_file = st.file_uploader("Upload a PDF", type="pdf", key="pdf_uploader_top")
+    c1, c2 = st.columns([1,1])
+    with c1:
+        if uploaded_file and st.button("Process Document", key="process_pdf_top", use_container_width=True):
+            with st.spinner("Processing document..."):
+                session_id = str(uuid.uuid4())
+                temp_dir = os.path.join(TEMP_STORAGE_PATH, session_id); os.makedirs(temp_dir, exist_ok=True)
+                file_path = os.path.join(temp_dir, uploaded_file.name)
+                with open(file_path, "wb") as buffer: buffer.write(uploaded_file.getbuffer())
+                doc = fitz.open(file_path)
+                texts = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=100).split_text(
+                    "".join(page.get_text() for page in doc)
+                )
+                doc.close()
+                FAISS.from_texts(texts, embeddings).save_local(temp_dir)
+                st.session_state.session_id = session_id; st.session_state.active_doc_name = uploaded_file.name
+                st.success(f"Ready for questions about **{uploaded_file.name}**.")
+                time.sleep(0.3)
+                st.rerun()
+    with c2:
+        if st.session_state.active_doc_name and st.button("Clear Document & Revert to Default", key="clear_doc_main", use_container_width=True):
+            st.session_state.session_id = None; st.session_state.active_doc_name = None
+            st.experimental_rerun()
+
+    if st.session_state.active_doc_name:
+        st.caption(f"Active Document: **{st.session_state['active_doc_name']}**")
+    st.markdown("</div>", unsafe_allow_html=True)
+
+render_top_uploader()
+
 # --- Sidebar -----------------------------------------------------------------
 with st.sidebar:
     st.header("Settings")
@@ -1176,7 +1209,7 @@ with st.sidebar:
     st.divider()
     st.session_state.teaching_mode = (st.session_state.mode == "Teaching")
 
-    st.header("Voice Settings")
+    st.header("Voice Chat")  # renamed from Voice Settings
     st.session_state.voice_enabled = st.toggle("Enable Voice Chat", value=st.session_state.voice_enabled, help="Enable voice input and spoken responses.")
     if st.session_state.voice_enabled and (st.session_state.mode in ["Teaching"] or st.session_state.mode is None):
         input_accent_options = {
@@ -1194,32 +1227,6 @@ with st.sidebar:
             "Assistant's Accent (for output)", options=list(output_accent_options.keys()),
             index=list(output_accent_options.values()).index(st.session_state.output_accent)
         )]
-
-    st.divider()
-    st.header("Custom File")
-    uploaded_file = st.file_uploader("Upload a PDF", type="pdf", key="pdf_uploader")
-    if uploaded_file and st.button("Process Document", key="process_pdf", use_container_width=True):
-        with st.spinner("Processing document..."):
-            session_id = str(uuid.uuid4())
-            temp_dir = os.path.join(TEMP_STORAGE_PATH, session_id); os.makedirs(temp_dir, exist_ok=True)
-            file_path = os.path.join(temp_dir, uploaded_file.name)
-            with open(file_path, "wb") as buffer: buffer.write(uploaded_file.getbuffer())
-            doc = fitz.open(file_path)
-            texts = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=100).split_text(
-                "".join(page.get_text() for page in doc)
-            )
-            doc.close()
-            FAISS.from_texts(texts, embeddings).save_local(temp_dir)
-            st.session_state.session_id = session_id; st.session_state.active_doc_name = uploaded_file.name
-            st.success(f"Ready for questions about **{uploaded_file.name}**.")
-            time.sleep(0.4)
-            st.rerun()
-
-    if st.session_state.active_doc_name:
-        st.caption(f"Active Document: **{st.session_state['active_doc_name']}**")
-        if st.button("Clear Document & Revert to Default", key="clear_doc_sidebar", use_container_width=True):
-            st.session_state.session_id = None; st.session_state.active_doc_name = None
-            st.rerun()
 
 # --- Chat history (baseline/Teaching) ---------------------------------------
 if (st.session_state.mode in ["Teaching"]) or (st.session_state.mode is None):
