@@ -178,11 +178,18 @@ def create_exam_pdf(rows, meta) -> str:
     try:
         pdf.add_font("DejaVu", "", "DejaVuSans.ttf", uni=True)
         pdf.add_font("DejaVu", "B", "DejaVuSans-Bold.ttf", uni=True)
+        # Attempt italic face for explanations
+        try:
+            pdf.add_font("DejaVu", "I", "DejaVuSans-Oblique.ttf", uni=True)
+            has_italic = True
+        except Exception:
+            has_italic = False
         FONT = "DejaVu"
         unicode_ok = True
     except RuntimeError:
-        FONT = "Helvetica"
+        FONT = "Helvetica"     # core font has implicit I/B support
         unicode_ok = False
+        has_italic = True
 
     def safe(txt: str) -> str:
         if unicode_ok:
@@ -216,7 +223,12 @@ def create_exam_pdf(rows, meta) -> str:
             if r["selected"] == key and r["selected"] != r["correct"]:
                 prefix = cross
             pdf.multi_cell(0, 6, safe(f"{prefix}{key}. {r[key]}"))
-        pdf.set_font(FONT, "I", 10)
+        # Italic for explanation if available; else regular
+        try:
+            style = "I" if has_italic else ""
+            pdf.set_font(FONT, style, 10)
+        except RuntimeError:
+            pdf.set_font(FONT, "", 10)
         pdf.set_text_color(60, 60, 60)
         pdf.multi_cell(0, 5, safe(f"Why: {r['explanation']}"))
         pdf.set_text_color(0, 0, 0)
