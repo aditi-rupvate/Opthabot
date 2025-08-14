@@ -570,7 +570,7 @@ def render_exam_ui():
 
     topic = st.text_input("Topic for MCQs (ophthalmology only)", placeholder="e.g., Primary open-angle glaucoma", key="mcq_topic")
 
-    # ---- Controls row (button aligned via CSS helper) ----
+    # ---- Controls row (aligned) ----
     c_num, c_diff, c_btn = st.columns([1, 1, 1], gap="small")
     with c_num:
         num_q = st.number_input("Number of MCQs", min_value=1, max_value=20, value=5, step=1, key="mcq_num")
@@ -908,7 +908,7 @@ def render_flash_dashboard(fs):
 def render_flash_ui():
     st.markdown("<div class='topbar-custom'>Flashcards Mode · Rapid Recall</div>", unsafe_allow_html=True)
 
-    # Flip card styles + swipe script (checkbox-based flip)
+    # Flip card styles + swipe script (force-front fix)
     st.markdown(f"""
     <style>
       #flash-scope .flip-wrap {{ perspective: 1200px; width: min(720px, 95%); margin: 0 auto 0.75rem auto; }}
@@ -917,6 +917,8 @@ def render_flash_ui():
       #flash-scope .flip-card-inner {{ position: relative; width: 100%; height: 100%; transform-style: preserve-3d; transition: transform .55s cubic-bezier(.2,.7,.2,1); }}
       #flash-scope input[type="checkbox"] {{ display:none; }}
       #flash-scope input[type="checkbox"]:checked + label .flip-card-inner {{ transform: rotateY(180deg); }}
+      /* Force each new card to open on front until first click */
+      #flash-scope .flip-card.force-front .flip-card-inner {{ transform: rotateY(0deg) !important; }}
 
       #flash-scope .side {{ position: absolute; inset: 0; backface-visibility: hidden; border-radius: 18px; display: flex; flex-direction: column; justify-content: center; align-items: center; padding: 1.2rem; color: #f6f7fb; }}
       #flash-scope .back {{ transform: rotateY(180deg); background: linear-gradient(135deg, #26375b 0%, #1e2a45 100%); }}
@@ -927,33 +929,6 @@ def render_flash_ui():
       #flash-scope .controls {{ width:min(720px,95%); margin:.5rem auto 0 auto; display:flex; gap:.5rem; }}
       #flash-scope .controls .stButton>button {{ border-radius: 12px; }}
     </style>
-    <script>
-      (function(){{
-        // swipe-up to go next
-        let startY = null;
-        const scope = document.getElementById('flash-scope');
-        if(!scope) return;
-        scope.addEventListener('touchstart', function(e) {{
-          if(!e.changedTouches || !e.changedTouches.length) return;
-          startY = e.changedTouches[0].clientY;
-        }}, {{passive:true}});
-        scope.addEventListener('touchend', function(e) {{
-          if(startY === null) return;
-          const endY = e.changedTouches[0].clientY;
-          if(startY - endY > 50) {{
-            const btns = Array.from(document.querySelectorAll('button')).filter(b => b.innerText.trim() === 'Next card');
-            if(btns.length) btns[0].click();
-          }}
-          startY = null;
-        }}, {{passive:true}});
-        scope.addEventListener('keyup', function(e){{
-          if(e.key === ' ' || e.key === 'ArrowUp') {{
-            const btns = Array.from(document.querySelectorAll('button')).filter(b => b.innerText.trim() === 'Next card');
-            if(btns.length) btns[0].click();
-          }}
-        }});
-      }})();
-    </script>
     """, unsafe_allow_html=True)
 
     topic = st.text_input("Flashcards topic (ophthalmology only)", placeholder="e.g., Glaucoma medications")
@@ -987,6 +962,7 @@ def render_flash_ui():
     if idx >= total: idx = total - 1
     st.session_state.flash["idx"] = idx
 
+    # Dashboard
     def _dash(fs_):
         total = len(fs_["cards"])
         reviewed = sum(1 for c in fs_["cards"] if c.get("mark") is not None)
@@ -1003,16 +979,19 @@ def render_flash_ui():
     _dash(fs)
     st.markdown("<br/>", unsafe_allow_html=True)
 
+    # Current card (force-front + reliable swipe-to-next)
     card = fs["cards"][idx]
     front = _escape_html(card["front"])
     back  = _escape_html(card["back"])
+
     flip_id = f"flip_{idx}_{uuid.uuid4().hex[:6]}"
+    label_id = f"lbl_{flip_id}"
 
     st.markdown(f"""
     <div id="flash-scope" tabindex="0">
       <div class="flip-wrap">
         <input id="{flip_id}" type="checkbox" />
-        <label class="flip-card" for="{flip_id}" aria-label="Flashcard (tap to flip)">
+        <label id="{label_id}" class="flip-card force-front" for="{flip_id}" aria-label="Flashcard (tap to flip)">
           <div class="flip-card-inner">
             <div class="side front">
               <div class="q">{front}</div>
@@ -1026,9 +1005,23 @@ def render_flash_ui():
         </label>
       </div>
     </div>
-    <script>(function(){{var c=document.getElementById("{flip_id}"); if(c) c.checked=false;}})();</script>
+    <script>
+      (function(){{
+        var cb  = document.getElementById("{flip_id}");
+        var lbl = document.getElementById("{label_id}");
+        // Always start on front for a fresh card
+        if (cb) cb.checked = false;
+        if (lbl) {{
+          lbl.classList.add("force-front");
+          // On first tap, allow flip and drop the lock
+          lbl.addEventListener("click", function(){{ setTimeout(function(){{ lbl.classList.remove("force-front"); }}, 0); }});
+        }}
+      }})();
+    </script>
     """, unsafe_allow_html=True)
 
+    # Controls (wrap Next button in a stable container id for JS to target)
+    next_host_id = f"next_host_{idx}"
     left, mid, right = st.columns([1,1,1])
     with left:
         if st.button("👍 I got it", key=f"fc_right_{idx}", use_container_width=True):
@@ -1043,14 +1036,54 @@ def render_flash_ui():
                 st.session_state.flash["idx"] = idx + 1
             st.rerun()
     with right:
+        st.markdown(f"<div id='{next_host_id}'>", unsafe_allow_html=True)
         if st.button("Next card", key=f"fc_next_{idx}", use_container_width=True):
             if idx < total - 1:
                 st.session_state.flash["idx"] = idx + 1
             st.rerun()
+        st.markdown("</div>", unsafe_allow_html=True)
+
+    # Reliable mobile swipe-up → click the real Next button inside our host
+    st.markdown(f"""
+    <script>
+      (function(){{
+        const scope = document.getElementById('flash-scope');
+        let startY = null;
+        if(!scope) return;
+        scope.addEventListener('touchstart', function(e) {{
+          if(!e.changedTouches || !e.changedTouches.length) return;
+          startY = e.changedTouches[0].clientY;
+        }}, {{passive:true}});
+        scope.addEventListener('touchend', function(e) {{
+          if(startY === null) return;
+          const endY = e.changedTouches[0].clientY;
+          if(startY - endY > 50) {{
+            const host = document.getElementById('{next_host_id}');
+            if (host) {{
+              const btn = host.querySelector('button');
+              if (btn) btn.click();
+            }}
+          }}
+          startY = null;
+        }}, {{passive:true}});
+        // Keyboard support
+        scope.addEventListener('keyup', function(e){{
+          if(e.key === ' ' || e.key === 'ArrowUp') {{
+            const host = document.getElementById('{next_host_id}');
+            if (host) {{
+              const btn = host.querySelector('button');
+              if (btn) btn.click();
+            }}
+          }}
+        }});
+      }})();
+    </script>
+    """, unsafe_allow_html=True)
 
     st.markdown("<br/>", unsafe_allow_html=True)
     _dash(st.session_state.flash)
 
+    # Downloads
     rows = []
     for i, c in enumerate(st.session_state.flash["cards"]):
         m = c.get("mark")
