@@ -164,7 +164,81 @@ def render_audio_player_b64(audio_b64: str):
     """
     st.markdown(audio_html, unsafe_allow_html=True)
 
-# --- PDF Generation Class ---
+# --- Helpers: PDF creators for Exam & Case downloads -------------------------
+def create_exam_pdf(rows, meta) -> str:
+    """Create a PDF summarizing an MCQ session. Returns file path."""
+    pdf = FPDF()
+    pdf.set_auto_page_break(auto=True, margin=15)
+    pdf.add_page()
+    pdf.set_font("Helvetica", "B", 16)
+    pdf.cell(0, 10, "Ophthalmology MCQ Session", ln=1)
+    pdf.set_font("Helvetica", "", 11)
+    meta_line = f"Topic: {meta.get('topic','-')}  |  Score: {meta.get('score',0)}/{meta.get('total',0)}  |  Attempted: {meta.get('attempted',0)}  |  Generated: {meta.get('generated_at','')}"
+    pdf.multi_cell(0, 6, meta_line)
+    pdf.ln(2)
+    for r in rows:
+        pdf.set_font("Helvetica", "B", 12)
+        pdf.multi_cell(0, 7, f"Q{r['index']}. {r['question']}")
+        pdf.set_font("Helvetica", "", 11)
+        for key in ["A","B","C","D"]:
+            mark = ""
+            if r["correct"] == key:
+                mark = "✔ "
+            if r["selected"] == key and r["selected"] != r["correct"]:
+                mark = "✖ "
+            pdf.multi_cell(0, 6, f"{mark}{key}. {r[key]}")
+        pdf.set_font("Helvetica", "I", 10)
+        pdf.set_text_color(60,60,60)
+        pdf.multi_cell(0, 5, f"Why: {r['explanation']}")
+        pdf.set_text_color(0,0,0)
+        pdf.ln(2)
+    filename = f"exam_mcqs_{datetime.utcnow().strftime('%Y%m%d_%H%M%S')}.pdf"
+    filepath = os.path.join(CHEATSHEET_PATH, filename)
+    pdf.output(filepath)
+    return filepath
+
+def create_case_pdf(payload) -> str:
+    """Create a PDF for a case interaction. Returns file path."""
+    pdf = FPDF()
+    pdf.set_auto_page_break(auto=True, margin=15)
+    pdf.add_page()
+    pdf.set_font("Helvetica", "B", 16)
+    pdf.cell(0, 10, "Ophthalmology Case Interaction", ln=1)
+    pdf.set_font("Helvetica", "", 11)
+    pdf.multi_cell(0, 6, f"Topic: {payload.get('topic','-')}")
+    pdf.multi_cell(0, 6, f"Generated: {payload.get('generated_at','')}")
+    pdf.ln(2)
+    pdf.set_font("Helvetica", "B", 12)
+    pdf.multi_cell(0, 7, f"Title: {payload.get('title','')}")
+    pdf.set_font("Helvetica", "", 11)
+    pdf.multi_cell(0, 6, f"Scenario: {payload.get('scenario','')}")
+    pdf.ln(1)
+    pdf.set_font("Helvetica", "B", 12)
+    pdf.multi_cell(0, 7, "Your Response")
+    pdf.set_font("Helvetica", "", 11)
+    pdf.multi_cell(0, 6, payload.get("learner_response",""))
+    fb = payload.get("feedback", {})
+    strengths = fb.get("strengths", [])
+    missed = fb.get("missed", [])
+    suggestions = fb.get("suggestions","")
+    pdf.ln(2)
+    pdf.set_font("Helvetica", "B", 12); pdf.multi_cell(0, 7, "Feedback")
+    pdf.set_font("Helvetica", "", 11)
+    if strengths:
+        pdf.multi_cell(0, 6, "What you did well: " + "; ".join(strengths))
+    if missed:
+        pdf.multi_cell(0, 6, "What to add next time: " + "; ".join(missed))
+    if suggestions:
+        pdf.multi_cell(0, 6, "Suggestions: " + suggestions)
+    sc = payload.get("score", {})
+    pdf.ln(1)
+    pdf.multi_cell(0, 6, f"Score: {sc.get('achieved',0)}/100 — {sc.get('explanation','')}")
+    filename = f"case_interaction_{datetime.utcnow().strftime('%Y%m%d_%H%M%S')}.pdf"
+    filepath = os.path.join(CHEATSHEET_PATH, filename)
+    pdf.output(filepath)
+    return filepath
+
+# --- PDF Generation Class (cheatsheet; unchanged) ---------------------------
 class PDF(FPDF):
     def __init__(self, topic, *args, **kwargs):
         super().__init__(*args, **kwargs)
@@ -180,7 +254,6 @@ class PDF(FPDF):
         self.set_text_color(128, 128, 128)
         self.cell(0, 10, f"Page {self.page_no()}/{{nb}}", 0, 0, 'C')
 
-# --- PDF Function ---
 def create_formatted_pdf(text_content: str, topic: str) -> str:
     pdf = PDF(topic)
     try:
@@ -454,6 +527,7 @@ def render_exam_ui():
         if selected is None:
             # BEFORE selection: show clickable buttons only
             bcols = st.columns(2)
+            # tighter spacing for buttons handled via CSS below
             for j, opt in enumerate(q["options"]):
                 if bcols[j % 2].button(f"{chr(65+j)}. {opt}", key=f"mcq_{i}_{j}"):
                     st.session_state.exam["selected"][i] = j
@@ -473,7 +547,7 @@ def render_exam_ui():
     # Refresh dashboard after answers
     render_exam_dashboard(st.session_state.exam)
 
-    # Downloads
+    # Downloads (CSV + PDF only)
     rows = []
     for i, q in enumerate(st.session_state.exam["questions"]):
         sel = st.session_state.exam["selected"].get(i, None)
@@ -504,22 +578,23 @@ def render_exam_ui():
             use_container_width=True
         )
 
-    # JSON
-    json_payload = {
-        "topic": st.session_state.exam.get("topic"),
-        "generated_at": st.session_state.exam.get("generated_at"),
-        "score": st.session_state.exam.get("score"),
-        "attempted": len(st.session_state.exam.get("selected", {})),
-        "total": len(st.session_state.exam.get("questions", [])),
-        "items": rows
-    }
-    st.download_button(
-        "📥 Download MCQ Session (JSON)",
-        data=json.dumps(json_payload, indent=2).encode("utf-8"),
-        file_name=f"exam_mcqs_{datetime.utcnow().strftime('%Y%m%d_%H%M%S')}.json",
-        mime="application/json",
-        use_container_width=True
-    )
+        # PDF
+        meta = {
+            "topic": st.session_state.exam.get("topic"),
+            "generated_at": st.session_state.exam.get("generated_at"),
+            "score": st.session_state.exam.get("score"),
+            "attempted": len(st.session_state.exam.get("selected", {})),
+            "total": len(st.session_state.exam.get("questions", []))
+        }
+        pdf_path = create_exam_pdf(rows, meta)
+        with open(pdf_path, "rb") as f:
+            st.download_button(
+                "📥 Download MCQ Session (PDF)",
+                data=f.read(),
+                file_name=os.path.basename(pdf_path),
+                mime="application/pdf",
+                use_container_width=True
+            )
 
 # ============================ NEW: CASE MODE =================================
 
@@ -645,6 +720,7 @@ def render_case_ui():
             st.caption(f"Scoring note: {score_exp}")
         st.markdown("</div>", unsafe_allow_html=True)
 
+        # Downloads (CSV + PDF only)
         payload = {
             "topic": case_state.get("topic"),
             "generated_at": case_state.get("generated_at"),
@@ -654,13 +730,45 @@ def render_case_ui():
             "feedback": graded["feedback"],
             "score": graded["score"]
         }
+
+        # CSV (single row)
+        csv_buf = io.StringIO()
+        fields = [
+            "topic","generated_at","title","scenario","learner_response",
+            "strengths","missed","suggestions","score","score_note"
+        ]
+        writer = csv.DictWriter(csv_buf, fieldnames=fields)
+        writer.writeheader()
+        writer.writerow({
+            "topic": payload["topic"],
+            "generated_at": payload["generated_at"],
+            "title": payload["title"],
+            "scenario": payload["scenario"],
+            "learner_response": payload["learner_response"],
+            "strengths": "; ".join(payload["feedback"].get("strengths", [])),
+            "missed": "; ".join(payload["feedback"].get("missed", [])),
+            "suggestions": payload["feedback"].get("suggestions",""),
+            "score": payload["score"].get("achieved",0),
+            "score_note": payload["score"].get("explanation","")
+        })
         st.download_button(
-            "📥 Download Case Interaction (JSON)",
-            data=json.dumps(payload, indent=2).encode("utf-8"),
-            file_name=f"case_interaction_{datetime.utcnow().strftime('%Y%m%d_%H%M%S')}.json",
-            mime="application/json",
+            "📥 Download Case Interaction (CSV)",
+            data=csv_buf.getvalue().encode("utf-8"),
+            file_name=f"case_interaction_{datetime.utcnow().strftime('%Y%m%d_%H%M%S')}.csv",
+            mime="text/csv",
             use_container_width=True
         )
+
+        # PDF
+        pdf_path = create_case_pdf(payload)
+        with open(pdf_path, "rb") as f:
+            st.download_button(
+                "📥 Download Case Interaction (PDF)",
+                data=f.read(),
+                file_name=os.path.basename(pdf_path),
+                mime="application/pdf",
+                use_container_width=True
+            )
 
 # --- Streamlit UI ---
 st.set_page_config(layout="centered")
@@ -681,14 +789,14 @@ if "mode" not in st.session_state: st.session_state.mode = "Chat"  # Chat | Teac
 
 THEME = DARK if st.session_state.theme == "dark" else LIGHT
 
-# --- Global Styles (cards, options, case visuals) ---
+# --- Global Styles (cards, options, case visuals + tighter button spacing) ---
 st.markdown(f"""
 <style>
     .stApp {{ background: {THEME['bg']}; color: {THEME['text']}; }}
     .topbar-custom {{ background: {THEME['bar']}; border-radius: 16px; padding: 1.0em 1.1em; margin: 0.8em 0 1.0em; box-shadow: 0 2px 12px 0 rgba(44,46,66,0.06); font-size: 1.3rem; font-weight: 800; letter-spacing: .01em; }}
     .card {{ background: {THEME['bot']}; color: {THEME['text']}; border-radius: 14px; padding: 1em 1.1em; border: 1px solid {THEME['border']}; box-shadow: 0 1px 12px 0 rgba(44,46,66,0.05); }}
     .card-title {{ font-weight: 700; margin-bottom: .5em; }}
-    .option {{ margin-top:.5em; padding:.6em .75em; border:1px solid {THEME['border']}; border-radius:12px; }}
+    .option {{ margin-top:.35em; padding:.6em .75em; border:1px solid {THEME['border']}; border-radius:12px; }}
     .option.neutral {{ background: {THEME['bg']}; }}
     .option.correct {{ background:#0e4d2e; color:#fff; border-color:#2ea043; }}
     .option.wrong {{ background:#6b2222; color:#fff; border-color:#f85149; }}
@@ -699,7 +807,7 @@ st.markdown(f"""
     .msg-user {{ background: {THEME['user']}; color: {THEME['text']}; border-radius: 16px 16px 4px 20px; margin-bottom: 0.3em; padding: 1em 1.35em; width: fit-content; max-width: 85%; font-size: 1.13rem; border: 1.5px solid {THEME['border']}; margin-left: auto; margin-right: 0; text-align: right; box-shadow: 0 1px 12px 0 rgba(55,96,148,0.05); }}
     .msg-bot {{ background: {THEME['bot']}; color: {THEME['text']}; border-radius: 16px 16px 20px 4px; margin-bottom: 0.7em; padding: 1.08em 1.23em 1em 1.18em; width: fit-content; max-width: 85%; font-size: 1.13rem; border: 1.5px solid {THEME['border']}; margin-right: auto; margin-left: 0; text-align: left; box-shadow: 0 1px 12px 0 rgba(44,46,66,0.05); }}
     [data-testid="stExpander"] {{ border-color: {THEME['border']}; background: {THEME['expander']}; }}
-    .stButton>button, .stDownloadButton>button {{ border: 1px solid {THEME['border']}; }}
+    .stButton>button {{ width:100%; padding:.70em 1em; margin:.25rem 0 !important; border-radius:12px; }}
     .note-text {{ color: #787878; font-size: 0.9rem; }}
     .case-card {{ background: linear-gradient(135deg, #182236 0%, #24324f 100%); color:#f6f7fb; padding:1.0em 1.1em; border-radius: 14px; border:1px solid #2a3350; }}
     .case-title {{ font-weight:800; margin-bottom:.4em; }}
@@ -711,23 +819,23 @@ st.markdown(f"""
 
 st.markdown("<div class='topbar-custom'>Ophtha Bot : AI Chatbot for Postgrad Ophthalmology Students</div>", unsafe_allow_html=True)
 
-# --- Sidebar: MODES (renamed from Settings) + existing controls -------------
+# --- Sidebar: keep Settings (with Dark Mode), then Modes ---------------------
 with st.sidebar:
+    st.header("Settings")
+    is_dark_on = st.session_state.theme == "dark"
+    toggled = st.toggle("Dark Mode", value=is_dark_on, key="theme_toggle", help="Switch themes")
+    if toggled != is_dark_on:
+        st.session_state.theme = "dark" if toggled else "light"
+        st.rerun()
+
     st.header("Modes")
     st.session_state.mode = st.radio(
         "Choose mode",
         options=["Chat", "Teaching", "Exam", "Case"],
         index=["Chat", "Teaching", "Exam", "Case"].index(st.session_state.mode),
         help="Switch between regular chat, tutor-style, MCQ exam practice, or case simulations.",
-        key="mode_radio"  # <-- unique key added to avoid duplicate element id
+        key="mode_radio"
     )
-
-    # Theme toggle
-    is_dark_on = st.session_state.theme == "dark"
-    toggled = st.toggle("Dark Mode", value=is_dark_on, key="theme_toggle", help="Switch themes")
-    if toggled != is_dark_on:
-        st.session_state.theme = "dark" if toggled else "light"
-        st.rerun()
 
     st.divider()
 
@@ -794,12 +902,13 @@ if st.session_state.active_doc_name:
         st.rerun()
 
 # --- Main areas per MODE -----------------------------------------------------
-if st.session_state.mode == "Exam":
+def render_exam_ui_proxy():  # tiny wrapper just to keep section tidy
     render_exam_ui()
 
+if st.session_state.mode == "Exam":
+    render_exam_ui_proxy()
 elif st.session_state.mode == "Case":
     render_case_ui()
-
 else:
     # ============ Chat / Teaching modes use original chat flow ===============
     user_prompt = None
