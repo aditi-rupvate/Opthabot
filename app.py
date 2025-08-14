@@ -1154,7 +1154,7 @@ with st.sidebar:
     st.header("Modes")
     st.session_state.mode = st.radio(
         "Choose mode",
-        options=["Chat", "Teaching", "Exam", "Case", "Flashcards"],
+        options=["Chat", "Teaching", "Exam", "Case-Based", "Flashcards"],
         index=["Chat", "Teaching", "Exam", "Case", "Flashcards"].index(st.session_state.mode) if st.session_state.mode in ["Chat","Teaching","Exam","Case","Flashcards"] else 0,
         help="Switch between chat, tutor-style, MCQ practice, case simulations, or flashcards.",
         key="mode_radio"
