@@ -444,31 +444,52 @@ def _parse_json_block(text: str):
             return None
     return None
 
+# ============================= DIFFICULTY MAPS ===============================
+DIFF_LEVELS = ["easy", "medium", "difficult", "extra difficult", "extremely difficult"]
+DIFF_GUIDE_MCQ = {
+    "easy": "single-step recall; common definitions; straightforward clinical facts; avoid tricks.",
+    "medium": "apply knowledge to common scenarios; simple differentials; mild distractors; one small trap allowed.",
+    "difficult": "multi-step reasoning; nuanced differentials/management; plausible distractors; include common pitfalls.",
+    "extra difficult": "complex, atypical presentations; guidelines nuance; multi-order reasoning; subtle traps.",
+    "extremely difficult": "expert level; rare but tested nuances; closely competing options; require synthesis across topics."
+}
+DIFF_GUIDE_CASE = {
+    "easy": "short, classic presentation; clear diagnosis path; 4–5 key points.",
+    "medium": "common but slightly tricky differential; 5–6 key points.",
+    "difficult": "atypical features; broader differential; management nuance; 6–7 key points.",
+    "extra difficult": "multisystem clues; ambiguous data; prioritization conflicts; 7–8 key points.",
+    "extremely difficult": "edge-case exam scenario; rare pitfalls; heavy weighting on justification; 8 key points."
+}
+
 # ============================= EXAM: MCQ ONLY ================================
 
-def generate_mcqs(topic: str, num_q: int = 5):
+def generate_mcqs(topic: str, num_q: int = 5, difficulty: str = "medium"):
+    diff = difficulty if difficulty in DIFF_LEVELS else "medium"
+    guide = DIFF_GUIDE_MCQ[diff]
     prompt = PromptTemplate.from_template(
         """You are an ophthalmology exam item writer.
 Create {num} high-quality single-best-answer MCQs on: "{topic}"
+Difficulty: {diff}. Design guidance: {guide}
 Constraints:
 - Postgraduate level, strictly ophthalmology.
 - 4 options (A–D). Exactly one correct.
-- Provide a 1–2 line explanation.
-- Output ONLY JSON as:
-{
+- Provide a 1–2 line explanation focused on the decision point.
+- Avoid images. Use concise wording.
+Output ONLY JSON as:
+{{
   "mcqs": [
-    {
+    {{
       "question": "...",
       "options": ["...", "...", "...", "..."],
       "correct_index": 0,
       "explanation": "..."
-    }
+    }}
   ]
-}
+}}
 """
     )
     chain = LLMChain(llm=llm, prompt=prompt)
-    raw = chain.run(topic=topic, num=num_q)
+    raw = chain.run(topic=topic, num=num_q, diff=diff, guide=guide)
     data = _parse_json_block(raw) or {"mcqs": []}
     mcqs = data.get("mcqs", [])
     clean = []
@@ -554,29 +575,39 @@ def render_exam_ui():
     st.markdown("<div class='exam-scope'>", unsafe_allow_html=True)
 
     topic = st.text_input("Topic for MCQs (ophthalmology only)", placeholder="e.g., Primary open-angle glaucoma", key="mcq_topic")
-    cols = st.columns([1, 1, 2])
+    cols = st.columns([1, 1, 1, 2])
     with cols[0]:
         num_q = st.number_input("Number of MCQs", min_value=1, max_value=20, value=5, step=1, key="mcq_num")
     with cols[1]:
+        difficulty = st.selectbox(
+            "Difficulty",
+            options=DIFF_LEVELS,
+            index=1,
+            key="mcq_difficulty",
+            help="Adjust MCQ complexity"
+        )
+    with cols[2]:
         if st.button("Generate MCQs", use_container_width=True, type="primary", key="mcq_generate"):
             with st.spinner("Generating MCQs…"):
-                mcqs = generate_mcqs(topic or "general ophthalmology", int(num_q))
+                mcqs = generate_mcqs(topic or "general ophthalmology", int(num_q), difficulty)
             st.session_state.exam = {
                 "topic": topic or "general ophthalmology",
                 "generated_at": datetime.utcnow().isoformat() + "Z",
                 "questions": mcqs,
                 "selected": {},   # q_idx -> opt_idx
-                "score": 0
+                "score": 0,
+                "difficulty": difficulty
             }
             st.rerun()
 
     exam_state = st.session_state.get("exam", None)
     if not exam_state or not exam_state.get("questions"):
-        st.info("Enter a topic and click **Generate MCQs** to start.")
+        st.info("Enter a topic, choose difficulty, and click **Generate MCQs** to start.")
         st.markdown("</div>", unsafe_allow_html=True)
         return
 
     render_exam_dashboard(exam_state)
+    st.caption(f"Difficulty: {exam_state.get('difficulty','medium').title()}")
     st.markdown("<br/>", unsafe_allow_html=True)
 
     for i, q in enumerate(exam_state["questions"]):
@@ -646,31 +677,34 @@ def render_exam_ui():
 
     st.markdown("</div>", unsafe_allow_html=True)  # close .exam-scope
 
-# ============================ CASE MODE (with spinners) ======================
+# ============================ CASE MODE (with difficulty) ====================
 
-def generate_case(topic: str):
+def generate_case(topic: str, difficulty: str = "medium"):
+    diff = difficulty if difficulty in DIFF_LEVELS else "medium"
+    guide = DIFF_GUIDE_CASE[diff]
     prompt = PromptTemplate.from_template(
         """You are an ophthalmology simulation author.
 Create ONE realistic case vignette (brief) for postgraduate level on: "{topic}"
+Difficulty: {diff}. Design guidance: {guide}
 Include:
 - title
 - scenario (2–5 sentences)
-- key_points: list of 5–8 bullet keywords (diagnosis+workup+management targets)
+- key_points: list of target ideas (diagnosis, workup, management) sized per difficulty
 Output ONLY JSON as:
-{
+{{
   "title": "...",
   "scenario": "...",
   "key_points": ["...", "...", "..."]
-}
+}}
 """
     )
     chain = LLMChain(llm=llm, prompt=prompt)
-    raw = chain.run(topic=topic or "general ophthalmology")
+    raw = chain.run(topic=topic or "general ophthalmology", diff=diff, guide=guide)
     data = _parse_json_block(raw) or {}
     title = data.get("title", "Ophthalmology Case")
     scenario = data.get("scenario", "A patient presents to clinic...")
     key_points = data.get("key_points", [])
-    return {"title": title, "scenario": scenario, "key_points": key_points}
+    return {"title": title, "scenario": scenario, "key_points": key_points, "difficulty": diff}
 
 def evaluate_case_response(scenario: str, key_points, user_answer: str):
     rubric = "; ".join(key_points[:8])
@@ -705,11 +739,19 @@ def render_case_ui():
     st.markdown("<div class='topbar-custom'>Case-Based Mode · Simulation</div>", unsafe_allow_html=True)
 
     topic = st.text_input("Case focus (ophthalmology only)", placeholder="e.g., Painless vision loss · CRAO vs. NAION")
-    c1, c2 = st.columns([1, 1])
+    c1, c2, c3 = st.columns([1, 1, 1])
     with c1:
+        difficulty = st.selectbox(
+            "Difficulty",
+            options=DIFF_LEVELS,
+            index=1,
+            key="case_difficulty",
+            help="Adjust case complexity"
+        )
+    with c2:
         if st.button("Generate Case", type="primary", use_container_width=True):
             with st.spinner("Generating case…"):
-                c = generate_case(topic or "general ophthalmology")
+                c = generate_case(topic or "general ophthalmology", difficulty)
             st.session_state.case = {
                 "topic": topic or "general ophthalmology",
                 "case": c,
@@ -723,10 +765,11 @@ def render_case_ui():
     if not case_state:
         with st.spinner("Loading case mode…"):
             time.sleep(0.3)
-        st.info("Enter a focus and click **Generate Case** to start.")
+        st.info("Enter a focus, choose difficulty, and click **Generate Case** to start.")
         return
 
     c = case_state["case"]
+    st.caption(f"Difficulty: {c.get('difficulty','medium').title()}")
     st.markdown(
         f"""
         <div class='case-card'>
@@ -1056,7 +1099,7 @@ if "voice_enabled" not in st.session_state: st.session_state.voice_enabled = Fal
 if "input_accent" not in st.session_state: st.session_state.input_accent = 'en-US'
 if "output_accent" not in st.session_state: st.session_state.output_accent = 'com'
 if "teaching_mode" not in st.session_state: st.session_state.teaching_mode = False
-# IMPORTANT: No default "Chat" mode anymore; baseline = None (acts as Chat)
+# baseline = Chat behavior when mode is None
 if "mode" not in st.session_state: st.session_state.mode = None
 
 THEME = DARK if st.session_state.theme == "dark" else LIGHT
@@ -1085,7 +1128,7 @@ st.markdown(f"""
     .case-title {{ font-weight:800; margin-bottom:.4em; }}
     .case-body {{ opacity:.95; }}
     .case-instr {{ margin:.6em 0 .3em 0; font-weight:600; }}
-    @media only screen and (max-width: 768px) {{ .topbar-custom {{ font-size: 1.1rem; padding: .9em; text-align: center; }} .msg-user, .msg-bot {{ font-size: 0.95rem; max-width: 95%; }} }}
+    @media only streamlit and (max-width: 768px) {{ .topbar-custom {{ font-size: 1.1rem; padding: .9em; text-align: center; }} .msg-user, .msg-bot {{ font-size: 0.95rem; max-width: 95%; }} }}
 </style>
 """, unsafe_allow_html=True)
 
@@ -1102,7 +1145,6 @@ with st.sidebar:
     st.header("Modes")
 
     allowed_modes = ["Teaching", "Exam", "Case", "Flashcards"]
-    # Toggle controls whether the user *activates* a mode; if off, baseline (Chat) is active.
     enable_modes = st.toggle(
         "Enable study modes",
         value=st.session_state.mode in allowed_modes,
@@ -1141,6 +1183,32 @@ with st.sidebar:
             index=list(output_accent_options.values()).index(st.session_state.output_accent)
         )]
 
+    st.divider()
+    st.header("Custom File")
+    uploaded_file = st.file_uploader("Upload a PDF", type="pdf", key="pdf_uploader")
+    if uploaded_file and st.button("Process Document", key="process_pdf", use_container_width=True):
+        with st.spinner("Processing document..."):
+            session_id = str(uuid.uuid4())
+            temp_dir = os.path.join(TEMP_STORAGE_PATH, session_id); os.makedirs(temp_dir, exist_ok=True)
+            file_path = os.path.join(temp_dir, uploaded_file.name)
+            with open(file_path, "wb") as buffer: buffer.write(uploaded_file.getbuffer())
+            doc = fitz.open(file_path)
+            texts = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=100).split_text(
+                "".join(page.get_text() for page in doc)
+            )
+            doc.close()
+            FAISS.from_texts(texts, embeddings).save_local(temp_dir)
+            st.session_state.session_id = session_id; st.session_state.active_doc_name = uploaded_file.name
+            st.success(f"Ready for questions about **{uploaded_file.name}**.")
+            time.sleep(0.4)
+            st.rerun()
+
+    if st.session_state.active_doc_name:
+        st.caption(f"Active Document: **{st.session_state['active_doc_name']}**")
+        if st.button("Clear Document & Revert to Default", key="clear_doc_sidebar", use_container_width=True):
+            st.session_state.session_id = None; st.session_state.active_doc_name = None
+            st.experimental_rerun()
+
 # --- Chat history (baseline/Teaching) ---------------------------------------
 if (st.session_state.mode in ["Teaching"]) or (st.session_state.mode is None):
     for entry in st.session_state.chat_history:
@@ -1153,30 +1221,6 @@ if (st.session_state.mode in ["Teaching"]) or (st.session_state.mode is None):
                 if os.path.exists(pdf_path):
                     with open(pdf_path, "rb") as pdf_file:
                         st.download_button("📥 Download Cheatsheet", pdf_file.read(), entry["pdf_filename"], "application/pdf", key=f"dl_{entry['pdf_filename']}_{uuid.uuid4()}")
-
-# --- Upload Document ---------------------------------------------------------
-with st.expander("Upload a Custom Document"):
-    uploaded_file = st.file_uploader("Upload a PDF", type="pdf")
-    if uploaded_file and st.button("Process Document"):
-        with st.spinner("Processing document..."):
-            session_id = str(uuid.uuid4())
-            temp_dir = os.path.join(TEMP_STORAGE_PATH, session_id); os.makedirs(temp_dir, exist_ok=True)
-            file_path = os.path.join(temp_dir, uploaded_file.name)
-            with open(file_path, "wb") as buffer: buffer.write(uploaded_file.getbuffer())
-            doc = fitz.open(file_path)
-            texts = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=100).split_text("".join(page.get_text() for page in doc))
-            doc.close()
-            FAISS.from_texts(texts, embeddings).save_local(temp_dir)
-            st.session_state.session_id = session_id; st.session_state.active_doc_name = uploaded_file.name
-            st.session_state.chat_history.append({"bot": f"Ready for questions about **{uploaded_file.name}**.<br><span class='note-text'>{disclaimer_text}</span>"})
-            st.rerun()
-
-if st.session_state.active_doc_name:
-    st.info(f"Active Document: **{st.session_state['active_doc_name']}**")
-    if st.button("Clear Document & Revert to Default"):
-        st.session_state.session_id = None; st.session_state.active_doc_name = None
-        st.session_state.chat_history.append({"bot": f"Reverted to default knowledge base.<br><span class='note-text'>{disclaimer_text}</span>"})
-        st.rerun()
 
 # --- Mode router -------------------------------------------------------------
 def render_exam_ui_proxy():
