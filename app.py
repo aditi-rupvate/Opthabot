@@ -9,7 +9,7 @@ import csv
 from datetime import datetime
 import streamlit as st
 from fpdf import FPDF
-import fitz # PyMuPDF
+import fitz  # PyMuPDF
 from langchain.agents import AgentExecutor, create_react_agent
 from langchain.chains import RetrievalQA, LLMChain
 from langchain.text_splitter import RecursiveCharacterTextSplitter
@@ -71,7 +71,6 @@ DOMAIN_REFUSAL = (
     "I'm specialised in ophthalmology (eye care) and basic greetings only. "
     "Please ask an eye-related question."
 )
-# ============================================================================
 
 # --- Backend Components ---
 embeddings = GoogleGenerativeAIEmbeddings(model="models/embedding-001", google_api_key=GOOGLE_API_KEY)
@@ -196,8 +195,10 @@ def create_exam_pdf(rows, meta) -> str:
         pdf.set_font(FONT, "B", 12)
         pdf.multi_cell(0, 7, safe(f"Q{r['index']}. {r['question']}"))
         pdf.set_font(FONT, "", 11)
-        for key in ["A","B","C","D"]:
-            prefix = check if r["correct"] == key else ""
+        for key in ["A", "B", "C", "D"]:
+            prefix = ""
+            if r["correct"] == key:
+                prefix = check
             if r["selected"] == key and r["selected"] != r["correct"]:
                 prefix = cross
             pdf.multi_cell(0, 6, safe(f"{prefix}{key}. {r[key]}"))
@@ -205,9 +206,9 @@ def create_exam_pdf(rows, meta) -> str:
             pdf.set_font(FONT, "I" if has_italic else "", 10)
         except RuntimeError:
             pdf.set_font(FONT, "", 10)
-        pdf.set_text_color(60,60,60)
+        pdf.set_text_color(60, 60, 60)
         pdf.multi_cell(0, 5, safe(f"Why: {r['explanation']}"))
-        pdf.set_text_color(0,0,0); pdf.ln(2)
+        pdf.set_text_color(0, 0, 0); pdf.ln(2)
 
     filename = f"exam_mcqs_{datetime.utcnow().strftime('%Y%m%d_%H%M%S')}.pdf"
     filepath = os.path.join(CHEATSHEET_PATH, filename)
@@ -435,10 +436,12 @@ Constraints:
     mcqs = data.get("mcqs", [])
     clean = []
     for q in mcqs[:num_q]:
-        if isinstance(q, dict) and all(k in q for k in ("question","options","correct_index","explanation")):
+        if isinstance(q, dict) and all(k in q for k in ("question", "options", "correct_index", "explanation")):
             if isinstance(q["options"], list) and len(q["options"]) == 4:
-                try: ci = int(q["correct_index"])
-                except Exception: ci = 0
+                try:
+                    ci = int(q["correct_index"])
+                except Exception:
+                    ci = 0
                 ci = max(0, min(3, ci))
                 clean.append({
                     "question": q["question"].strip(),
@@ -471,22 +474,49 @@ def render_option_badges(q_idx, opts, correct_idx, selected_idx):
                     unsafe_allow_html=True)
 
 def render_exam_ui():
-    # exam-scoped CSS so chat UI is unaffected
+    # Scoped CSS for Exam mode (improved option formatting)
     st.markdown(f"""
     <style>
-      .exam-scope .card {{ background: {THEME['bot']}; color:{THEME['text']};
-        border-radius:14px; padding:1em 1.1em; border:1px solid {THEME['border']}; }}
+      .exam-scope .card {{
+        background: {THEME['bot']}; color:{THEME['text']};
+        border-radius:14px; padding:1em 1.1em; border:1px solid {THEME['border']};
+      }}
       .exam-scope .card-title {{ font-weight:700; margin-bottom:.6em; }}
-      .exam-scope .option {{ margin:.35em 0; padding:.7em .85em; border:1px solid {THEME['border']};
-        border-radius:12px; background:{THEME['bg']}; display:flex; align-items:center; gap:.6em; }}
-      .exam-scope .option.correct {{ background:#0e4d2e; color:#fff; border-color:#2ea043; }}
-      .exam-scope .option.wrong {{ background:#6b2222; color:#fff; border-color:#f85149; }}
-      .exam-scope .chip {{ display:inline-flex; align-items:center; justify-content:center;
-        width:28px; height:28px; border-radius:999px; font-weight:700; border:1px solid {THEME['border']}; }}
-      .exam-scope .stButton>button {{ width:100%; text-align:left; padding:.80em 1.0em; border-radius:12px;
-        border:1px solid {THEME['border']}; box-shadow:0 1px 6px rgba(0,0,0,.08); }}
+
+      /* PRE-SELECTION buttons */
+      .exam-scope .stButton>button {{
+        width:100% !important;
+        text-align:left;
+        display:flex; align-items:center; gap:.6em; justify-content:flex-start;
+        padding:.90em 1.1em;
+        border-radius:14px; border:1px solid {THEME['border']};
+        background:{THEME['bg']};
+        box-shadow:0 1px 6px rgba(0,0,0,.08);
+        min-height:64px;
+        line-height:1.2; white-space:normal; word-break:break-word;
+      }}
       .exam-scope .stButton>button:hover {{ transform: translateY(-1px); }}
+
+      /* POST-SELECTION badges */
+      .exam-scope .option {{
+        margin:.35em 0; padding:.7em .85em; border:1px solid {THEME['border']};
+        border-radius:12px; background:{THEME['bg']};
+        display:flex; align-items:center; gap:.6em;
+        line-height:1.25; white-space:normal; word-break:break-word;
+      }}
+      .exam-scope .option.correct {{ background:#0e4d2e; color:#fff; border-color:#2ea043; }}
+      .exam-scope .option.wrong   {{ background:#6b2222; color:#fff; border-color:#f85149; }}
+
+      .exam-scope .chip {{
+        display:inline-flex; align-items:center; justify-content:center;
+        width:28px; height:28px; border-radius:999px; font-weight:700;
+        border:1px solid {THEME['border']}; flex:0 0 28px;
+      }}
+
       .exam-scope .gridgap > div > div {{ margin-bottom:.35rem; }}
+      @media (max-width: 900px) {{
+        .exam-scope [data-testid="column"] {{ width:100% !important; flex:1 0 100% !important; }}
+      }}
     </style>
     """, unsafe_allow_html=True)
 
@@ -494,7 +524,7 @@ def render_exam_ui():
     st.markdown("<div class='exam-scope'>", unsafe_allow_html=True)
 
     topic = st.text_input("Topic for MCQs (ophthalmology only)", placeholder="e.g., Primary open-angle glaucoma")
-    cols = st.columns([1,1,2])
+    cols = st.columns([1, 1, 2])
     with cols[0]:
         num_q = st.number_input("Number of MCQs", min_value=1, max_value=20, value=5, step=1)
     with cols[1]:
@@ -524,7 +554,7 @@ def render_exam_ui():
         selected = exam_state["selected"].get(i, None)
 
         if selected is None:
-            # BEFORE selection: two-column button grid, tighter gaps
+            # BEFORE selection: two-column button grid with spacing wrapper
             bcols = st.columns(2, gap="small")
             for j, opt in enumerate(q["options"]):
                 with bcols[j % 2]:
@@ -535,7 +565,7 @@ def render_exam_ui():
                         st.rerun()
                     st.markdown("</div>", unsafe_allow_html=True)
         else:
-            # AFTER selection: show colored badges + feedback (no buttons)
+            # AFTER selection: colored badges + feedback
             render_option_badges(i, q["options"], q["correct_index"], selected)
             if selected == q["correct_index"]:
                 st.markdown("<div class='explain good'>Correct ✅</div>", unsafe_allow_html=True)
@@ -553,10 +583,10 @@ def render_exam_ui():
     for i, q in enumerate(st.session_state.exam["questions"]):
         sel = st.session_state.exam["selected"].get(i, None)
         rows.append({
-            "index": i+1, "question": q["question"],
+            "index": i + 1, "question": q["question"],
             "A": q["options"][0], "B": q["options"][1], "C": q["options"][2], "D": q["options"][3],
-            "selected": "" if sel is None else chr(65+sel),
-            "correct": chr(65+q["correct_index"]),
+            "selected": "" if sel is None else chr(65 + sel),
+            "correct": chr(65 + q["correct_index"]),
             "is_correct": sel == q["correct_index"] if sel is not None else None,
             "explanation": q["explanation"]
         })
@@ -630,7 +660,7 @@ Return ONLY JSON as:
     "missed": ["...", "..."],
     "suggestions": "one concise paragraph with practical advice"
   }},
-  "score": {{
+    "score": {{
     "achieved": <int 0-100>,
     "explanation": "one line on how the score was decided"
   }}
@@ -648,7 +678,7 @@ def render_case_ui():
     st.markdown("<div class='topbar-custom'>Case-Based Mode · Simulation</div>", unsafe_allow_html=True)
 
     topic = st.text_input("Case focus (ophthalmology only)", placeholder="e.g., Painless vision loss · CRAO vs. NAION")
-    c1, c2 = st.columns([1,1])
+    c1, c2 = st.columns([1, 1])
     with c1:
         if st.button("Generate Case", type="primary", use_container_width=True):
             with st.spinner("Generating case…"):
@@ -676,7 +706,7 @@ def render_case_ui():
     )
 
     st.markdown("<div class='case-instr'>Write your impression and next steps (investigations/initial management).</div>", unsafe_allow_html=True)
-    st.session_state.case["response"] = st.text_area("Your response", value=case_state.get("response",""), height=160, placeholder="Type your reasoning here…")
+    st.session_state.case["response"] = st.text_area("Your response", value=case_state.get("response", ""), height=160, placeholder="Type your reasoning here…")
 
     if st.button("Submit Answer", type="primary", use_container_width=True):
         with st.spinner("Scoring your response…"):
@@ -688,9 +718,9 @@ def render_case_ui():
     if graded:
         strengths = graded["feedback"].get("strengths", [])
         missed = graded["feedback"].get("missed", [])
-        suggestions = graded["feedback"].get("suggestions","")
+        suggestions = graded["feedback"].get("suggestions", "")
         score_val = graded["score"].get("achieved", 0)
-        score_exp = graded["score"].get("explanation","")
+        score_exp = graded["score"].get("explanation", "")
 
         cc1, cc2, cc3 = st.columns(3)
         cc1.metric("Score", f"{score_val}/100")
@@ -719,7 +749,7 @@ def render_case_ui():
         }
 
         csv_buf = io.StringIO()
-        fields = ["topic","generated_at","title","scenario","learner_response","strengths","missed","suggestions","score","score_note"]
+        fields = ["topic", "generated_at", "title", "scenario", "learner_response", "strengths", "missed", "suggestions", "score", "score_note"]
         writer = csv.DictWriter(csv_buf, fieldnames=fields); writer.writeheader()
         writer.writerow({
             "topic": payload["topic"], "generated_at": payload["generated_at"],
@@ -727,9 +757,9 @@ def render_case_ui():
             "learner_response": payload["learner_response"],
             "strengths": "; ".join(payload["feedback"].get("strengths", [])),
             "missed": "; ".join(payload["feedback"].get("missed", [])),
-            "suggestions": payload["feedback"].get("suggestions",""),
-            "score": payload["score"].get("achieved",0),
-            "score_note": payload["score"].get("explanation","")
+            "suggestions": payload["feedback"].get("suggestions", ""),
+            "score": payload["score"].get("achieved", 0),
+            "score_note": payload["score"].get("explanation", "")
         })
         st.download_button(
             "📥 Download Case Interaction (CSV)",
@@ -748,7 +778,7 @@ def render_case_ui():
 
 # --- Theme Palettes ---
 LIGHT = {"bg": "#f8fafb", "bar": "#fff", "bot": "#e9eef6", "user": "#d1e7dd", "text": "#191b22", "input": "#e8edf2", "border": "#d4dde7", "expander": "#f4f7fb"}
-DARK  = {"bg": "#202126", "bar": "#232733", "bot": "#232733", "user": "#22577a", "text": "#f3f5f8", "input": "#242730", "border": "#26282f", "expander": "#24272e"}
+DARK = {"bg": "#202126", "bar": "#232733", "bot": "#232733", "user": "#22577a", "text": "#f3f5f8", "input": "#242730", "border": "#26282f", "expander": "#24272e"}
 
 # Session state
 if "theme" not in st.session_state: st.session_state.theme = "dark"
