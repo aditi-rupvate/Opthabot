@@ -3,6 +3,10 @@ import re
 import uuid
 import time
 import base64
+import json
+import io
+import csv
+from datetime import datetime
 import streamlit as st
 from fpdf import FPDF
 import fitz # PyMuPDF
@@ -243,7 +247,7 @@ def create_formatted_pdf(text_content: str, topic: str) -> str:
     pdf.output(filepath)
     return filename
 
-# --- Main Query Logic ---
+# --- RAG/Chat Logic ----------------------------------------------------------
 def handle_query_logic(query: str, session_id: str = None):
     # --- Domain gate (ophthalmology-only + brief greetings) ---
     if _is_greeting(query):
@@ -296,7 +300,6 @@ def handle_query_logic(query: str, session_id: str = None):
     
     base_prompt = hub.pull("hwchase17/react-chat")
 
-    # System prompt toggles depth/style; dynamic follow-up is always on
     teaching_mode = st.session_state.get("teaching_mode", False)
     if teaching_mode:
         system_instruction = (
@@ -349,7 +352,7 @@ def handle_query_logic(query: str, session_id: str = None):
                 except IndexError:
                     pass
 
-    # ---------------- DYNAMIC FOLLOW-UP: applied to ALL answers --------------
+    # ---- Append warm dynamic follow-up to ALL ophthalmology answers ----------
     if isinstance(final_answer, str) and final_answer.strip():
         try:
             follow = generate_teaching_followup(query, final_answer)
@@ -360,6 +363,331 @@ def handle_query_logic(query: str, session_id: str = None):
     # ------------------------------------------------------------------------
 
     return final_answer, pdf_filename
+
+# ============================= NEW: EXAM MODE ================================
+
+def _parse_json_block(text: str):
+    try:
+        return json.loads(text)
+    except Exception:
+        pass
+    m = re.search(r"\{.*\}|\[.*\]", text, flags=re.S)
+    if m:
+        try:
+            return json.loads(m.group(0))
+        except Exception:
+            return None
+    return None
+
+def generate_mcqs(topic: str, num_q: int = 5):
+    """Return list of dicts: {question, options:[...], correct_index, explanation}"""
+    prompt = PromptTemplate.from_template(
+        """You are an ophthalmology exam item writer.
+Create {num} high-quality single-best-answer MCQs on: "{topic}"
+Constraints:
+- Postgraduate level, strictly ophthalmology.
+- 4 options (A–D). Exactly one correct.
+- Provide a 1–2 line explanation.
+- Output ONLY JSON as:
+{{
+  "mcqs": [
+    {{
+      "question": "...",
+      "options": ["...", "...", "...", "..."],
+      "correct_index": 0,
+      "explanation": "..."
+    }}
+  ]
+}}
+"""
+    )
+    chain = LLMChain(llm=llm, prompt=prompt)
+    raw = chain.run(topic=topic, num=num_q)
+    data = _parse_json_block(raw) or {"mcqs": []}
+    mcqs = data.get("mcqs", [])
+    # simple sanitation
+    clean = []
+    for q in mcqs[:num_q]:
+        if isinstance(q, dict) and all(k in q for k in ("question","options","correct_index","explanation")):
+            if isinstance(q["options"], list) and len(q["options"]) == 4:
+                ci = int(q["correct_index"]) if str(q["correct_index"]).isdigit() else 0
+                ci = max(0, min(3, ci))
+                clean.append({
+                    "question": q["question"].strip(),
+                    "options": [str(x).strip() for x in q["options"]],
+                    "correct_index": ci,
+                    "explanation": q["explanation"].strip()
+                })
+    return clean
+
+def render_exam_dashboard(exam_state):
+    total = len(exam_state["questions"])
+    attempted = len(exam_state["selected"])
+    score = sum(1 for i, sel in exam_state["selected"].items() if sel == exam_state["questions"][i]["correct_index"])
+    st.session_state.exam["score"] = score
+    c1, c2, c3 = st.columns(3)
+    c1.metric("Total MCQs", total)
+    c2.metric("Attempted", attempted)
+    c3.metric("Score", score)
+
+def render_option_badges(q_idx, opts, correct_idx, selected_idx):
+    for j, opt in enumerate(opts):
+        cls = "neutral"
+        if selected_idx is not None:
+            if j == correct_idx:
+                cls = "correct"
+            if selected_idx == j and j != correct_idx:
+                cls = "wrong"
+        st.markdown(
+            f"<div class='option {cls}'><b>{chr(65+j)}.</b> {opt}</div>",
+            unsafe_allow_html=True
+        )
+
+def render_exam_ui():
+    st.markdown("<div class='topbar-custom'>Exam Mode · MCQ Practice</div>", unsafe_allow_html=True)
+
+    topic = st.text_input("Topic for MCQs (ophthalmology only)", placeholder="e.g., Primary open-angle glaucoma")
+    cols = st.columns([1,1,2])
+    with cols[0]:
+        num_q = st.number_input("Number of MCQs", min_value=1, max_value=20, value=5, step=1)
+    with cols[1]:
+        if st.button("Generate MCQs", use_container_width=True, type="primary"):
+            mcqs = generate_mcqs(topic or "general ophthalmology", int(num_q))
+            st.session_state.exam = {
+                "topic": topic or "general ophthalmology",
+                "generated_at": datetime.utcnow().isoformat() + "Z",
+                "questions": mcqs,
+                "selected": {},   # q_idx -> opt_idx
+                "score": 0
+            }
+            st.experimental_rerun()
+
+    exam_state = st.session_state.get("exam", None)
+    if not exam_state or not exam_state.get("questions"):
+        st.info("Enter a topic and click **Generate MCQs** to start.")
+        return
+
+    # Dashboard
+    render_exam_dashboard(exam_state)
+    st.markdown("<br/>", unsafe_allow_html=True)
+
+    # Render each MCQ card
+    for i, q in enumerate(exam_state["questions"]):
+        st.markdown(f"<div class='card'><div class='card-title'>Q{i+1}. {q['question']}</div>", unsafe_allow_html=True)
+        selected = exam_state["selected"].get(i, None)
+
+        # selection buttons
+        bcols = st.columns(2)
+        for j, opt in enumerate(q["options"]):
+            if bcols[j % 2].button(f"{chr(65+j)}. {opt}", key=f"mcq_{i}_{j}"):
+                st.session_state.exam["selected"][i] = j
+                st.experimental_rerun()
+
+        # colored badges after selection
+        render_option_badges(i, q["options"], q["correct_index"], selected)
+
+        # show explanation once answered
+        if selected is not None:
+            if selected == q["correct_index"]:
+                st.markdown("<div class='explain good'>Correct ✅</div>", unsafe_allow_html=True)
+            else:
+                st.markdown("<div class='explain bad'>Not quite ❌</div>", unsafe_allow_html=True)
+            st.markdown(f"<div class='explain note'><b>Why:</b> {q['explanation']}</div>", unsafe_allow_html=True)
+        st.markdown("</div>", unsafe_allow_html=True)  # end card
+        st.markdown("<br/>", unsafe_allow_html=True)
+
+    # Refresh dashboard after answers
+    render_exam_dashboard(st.session_state.exam)
+
+    # Downloads
+    rows = []
+    for i, q in enumerate(st.session_state.exam["questions"]):
+        sel = st.session_state.exam["selected"].get(i, None)
+        rows.append({
+            "index": i+1,
+            "question": q["question"],
+            "A": q["options"][0],
+            "B": q["options"][1],
+            "C": q["options"][2],
+            "D": q["options"][3],
+            "selected": "" if sel is None else chr(65+sel),
+            "correct": chr(65+q["correct_index"]),
+            "is_correct": sel == q["correct_index"] if sel is not None else None,
+            "explanation": q["explanation"]
+        })
+
+    # CSV
+    csv_buf = io.StringIO()
+    writer = csv.DictWriter(csv_buf, fieldnames=list(rows[0].keys()) if rows else [])
+    if rows:
+        writer.writeheader()
+        writer.writerows(rows)
+    st.download_button(
+        "📥 Download MCQ Session (CSV)",
+        data=csv_buf.getvalue().encode("utf-8"),
+        file_name=f"exam_mcqs_{datetime.utcnow().strftime('%Y%m%d_%H%M%S')}.csv",
+        mime="text/csv",
+        use_container_width=True
+    )
+
+    # JSON
+    json_payload = {
+        "topic": st.session_state.exam.get("topic"),
+        "generated_at": st.session_state.exam.get("generated_at"),
+        "score": st.session_state.exam.get("score"),
+        "attempted": len(st.session_state.exam.get("selected", {})),
+        "total": len(st.session_state.exam.get("questions", [])),
+        "items": rows
+    }
+    st.download_button(
+        "📥 Download MCQ Session (JSON)",
+        data=json.dumps(json_payload, indent=2).encode("utf-8"),
+        file_name=f"exam_mcqs_{datetime.utcnow().strftime('%Y%m%d_%H%M%S')}.json",
+        mime="application/json",
+        use_container_width=True
+    )
+
+# ============================ NEW: CASE MODE =================================
+
+def generate_case(topic: str):
+    """Return dict with a scenario and evaluation keys."""
+    prompt = PromptTemplate.from_template(
+        """You are an ophthalmology simulation author.
+Create ONE realistic case vignette (brief) for postgraduate level on: "{topic}"
+Include:
+- title
+- scenario (2–5 sentences)
+- key_points: list of 5–8 bullet keywords (diagnosis+workup+management targets)
+Output ONLY JSON as:
+{{
+  "title": "...",
+  "scenario": "...",
+  "key_points": ["...", "...", "..."]
+}}
+"""
+    )
+    chain = LLMChain(llm=llm, prompt=prompt)
+    raw = chain.run(topic=topic or "general ophthalmology")
+    data = _parse_json_block(raw) or {}
+    title = data.get("title", "Ophthalmology Case")
+    scenario = data.get("scenario", "A patient presents to clinic...")
+    key_points = data.get("key_points", [])
+    return {"title": title, "scenario": scenario, "key_points": key_points}
+
+def evaluate_case_response(scenario: str, key_points, user_answer: str):
+    """Generate feedback + score using key_points as rubric."""
+    rubric = "; ".join(key_points[:8])
+    prompt = PromptTemplate.from_template(
+        """You are grading a short free-text response for an ophthalmology case.
+Case: {scenario}
+Rubric key points (target ideas): {rubric}
+Learner response: {answer}
+
+Return ONLY JSON as:
+{{
+  "feedback": {{
+    "strengths": ["...", "..."],
+    "missed": ["...", "..."],
+    "suggestions": "one concise paragraph with practical advice"
+  }},
+  "score": {{
+    "achieved": <int 0-100>,
+    "explanation": "one line on how the score was decided"
+  }}
+}}
+"""
+    )
+    chain = LLMChain(llm=llm, prompt=prompt)
+    raw = chain.run(scenario=scenario, rubric=rubric, answer=user_answer)
+    data = _parse_json_block(raw) or {}
+    fb = data.get("feedback", {})
+    sc = data.get("score", {"achieved": 0, "explanation": ""})
+    return fb, sc
+
+def render_case_ui():
+    st.markdown("<div class='topbar-custom'>Case-Based Mode · Simulation</div>", unsafe_allow_html=True)
+
+    topic = st.text_input("Case focus (ophthalmology only)", placeholder="e.g., Painless vision loss · CRAO vs. NAION")
+    c1, c2 = st.columns([1,1])
+    with c1:
+        if st.button("Generate Case", type="primary", use_container_width=True):
+            c = generate_case(topic or "general ophthalmology")
+            st.session_state.case = {
+                "topic": topic or "general ophthalmology",
+                "case": c,
+                "response": "",
+                "graded": None,
+                "generated_at": datetime.utcnow().isoformat() + "Z"
+            }
+            st.experimental_rerun()
+
+    case_state = st.session_state.get("case", None)
+    if not case_state:
+        st.info("Enter a focus and click **Generate Case** to start.")
+        return
+
+    c = case_state["case"]
+    st.markdown(
+        f"""
+        <div class='case-card'>
+            <div class='case-title'>{c['title']}</div>
+            <div class='case-body'>{c['scenario']}</div>
+        </div>
+        """,
+        unsafe_allow_html=True
+    )
+
+    st.markdown("<div class='case-instr'>Write your impression and next steps (investigations/initial management).</div>", unsafe_allow_html=True)
+    st.session_state.case["response"] = st.text_area("Your response", value=case_state.get("response",""), height=160, placeholder="Type your reasoning here…")
+
+    if st.button("Submit Answer", type="primary", use_container_width=True):
+        fb, sc = evaluate_case_response(c["scenario"], c.get("key_points", []), st.session_state.case["response"])
+        st.session_state.case["graded"] = {"feedback": fb, "score": sc}
+        st.experimental_rerun()
+
+    graded = case_state.get("graded")
+    if graded:
+        strengths = graded["feedback"].get("strengths", [])
+        missed = graded["feedback"].get("missed", [])
+        suggestions = graded["feedback"].get("suggestions","")
+        score_val = graded["score"].get("achieved", 0)
+        score_exp = graded["score"].get("explanation","")
+
+        cc1, cc2, cc3 = st.columns(3)
+        cc1.metric("Score", f"{score_val}/100")
+        cc2.metric("Key hits", len(strengths))
+        cc3.metric("Gaps", len(missed))
+
+        st.markdown("<div class='card'><div class='card-title'>Feedback</div>", unsafe_allow_html=True)
+        if strengths:
+            st.markdown("<b>What you did well</b>", unsafe_allow_html=True)
+            for s_ in strengths: st.markdown(f"- {s_}")
+        if missed:
+            st.markdown("<b>What to add next time</b>", unsafe_allow_html=True)
+            for m_ in missed: st.markdown(f"- {m_}")
+        if suggestions:
+            st.markdown(f"<div class='explain note'>{suggestions}</div>", unsafe_allow_html=True)
+        if score_exp:
+            st.caption(f"Scoring note: {score_exp}")
+        st.markdown("</div>", unsafe_allow_html=True)
+
+        # Download interaction
+        payload = {
+            "topic": case_state.get("topic"),
+            "generated_at": case_state.get("generated_at"),
+            "title": c["title"],
+            "scenario": c["scenario"],
+            "learner_response": st.session_state.case["response"],
+            "feedback": graded["feedback"],
+            "score": graded["score"]
+        }
+        st.download_button(
+            "📥 Download Case Interaction (JSON)",
+            data=json.dumps(payload, indent=2).encode("utf-8"),
+            file_name=f"case_interaction_{datetime.utcnow().strftime('%Y%m%d_%H%M%S')}.json",
+            mime="application/json",
+            use_container_width=True
+        )
 
 # --- Streamlit UI ---
 st.set_page_config(layout="centered")
@@ -376,12 +704,51 @@ if "voice_enabled" not in st.session_state: st.session_state.voice_enabled = Fal
 if "input_accent" not in st.session_state: st.session_state.input_accent = 'en-US'
 if "output_accent" not in st.session_state: st.session_state.output_accent = 'com'
 if "teaching_mode" not in st.session_state: st.session_state.teaching_mode = False
+if "mode" not in st.session_state: st.session_state.mode = "Chat"  # Chat | Teaching | Exam | Case
 
 THEME = DARK if st.session_state.theme == "dark" else LIGHT
 
-# --- Main Application UI (no first page) ---
+# --- Global Styles (cards, options, case visuals) ---
+st.markdown(f"""
+<style>
+    .stApp {{ background: {THEME['bg']}; color: {THEME['text']}; }}
+    .topbar-custom {{ background: {THEME['bar']}; border-radius: 16px; padding: 1.0em 1.1em; margin: 0.8em 0 1.0em; box-shadow: 0 2px 12px 0 rgba(44,46,66,0.06); font-size: 1.3rem; font-weight: 800; letter-spacing: .01em; }}
+    .card {{ background: {THEME['bot']}; color: {THEME['text']}; border-radius: 14px; padding: 1em 1.1em; border: 1px solid {THEME['border']}; box-shadow: 0 1px 12px 0 rgba(44,46,66,0.05); }}
+    .card-title {{ font-weight: 700; margin-bottom: .5em; }}
+    .option {{ margin-top:.5em; padding:.6em .75em; border:1px solid {THEME['border']}; border-radius:12px; }}
+    .option.neutral {{ background: {THEME['bg']}; }}
+    .option.correct {{ background:#0e4d2e; color:#fff; border-color:#2ea043; }}
+    .option.wrong {{ background:#6b2222; color:#fff; border-color:#f85149; }}
+    .explain {{ margin-top:.6em; }}
+    .explain.good {{ color:#2ea043; font-weight:600; }}
+    .explain.bad {{ color:#f85149; font-weight:600; }}
+    .explain.note {{ opacity:.9; }}
+    .msg-user {{ background: {THEME['user']}; color: {THEME['text']}; border-radius: 16px 16px 4px 20px; margin-bottom: 0.3em; padding: 1em 1.35em; width: fit-content; max-width: 85%; font-size: 1.13rem; border: 1.5px solid {THEME['border']}; margin-left: auto; margin-right: 0; text-align: right; box-shadow: 0 1px 12px 0 rgba(55,96,148,0.05); word-break: break-word; }}
+    .msg-bot {{ background: {THEME['bot']}; color: {THEME['text']}; border-radius: 16px 16px 20px 4px; margin-bottom: 0.7em; padding: 1.08em 1.23em 1em 1.18em; width: fit-content; max-width: 85%; font-size: 1.13rem; border: 1.5px solid {THEME['border']}; margin-right: auto; margin-left: 0; text-align: left; box-shadow: 0 1px 12px 0 rgba(44,46,66,0.05); word-break: break-word; }}
+    [data-testid="stExpander"] {{ border-color: {THEME['border']}; background: {THEME['expander']}; }}
+    .stButton>button, .stDownloadButton>button {{ border: 1px solid {THEME['border']}; }}
+    .note-text {{ color: #787878; font-size: 0.9rem; }}
+    .case-card {{ background: linear-gradient(135deg, #182236 0%, #24324f 100%); color:#f6f7fb; padding:1.0em 1.1em; border-radius: 14px; border:1px solid #2a3350; }}
+    .case-title {{ font-weight:800; margin-bottom:.4em; }}
+    .case-body {{ opacity:.95; }}
+    .case-instr {{ margin:.6em 0 .3em 0; font-weight:600; }}
+    @media only screen and (max-width: 768px) {{ .topbar-custom {{ font-size: 1.1rem; padding: .9em; text-align: center; }} .msg-user, .msg-bot {{ font-size: 0.95rem; max-width: 95%; }} }}
+</style>
+""", unsafe_allow_html=True)
+
+st.markdown("<div class='topbar-custom'>Ophtha Bot : AI Chatbot for Postgrad Ophthalmology Students</div>", unsafe_allow_html=True)
+
+# --- Sidebar: MODES (renamed from Settings) + existing controls -------------
 with st.sidebar:
-    st.header("Settings")
+    st.header("Modes")  # renamed
+    st.session_state.mode = st.radio(
+        "Choose mode",
+        options=["Chat", "Teaching", "Exam", "Case"],
+        index=["Chat", "Teaching", "Exam", "Case"].index(st.session_state.mode),
+        help="Switch between regular chat, tutor-style, MCQ exam practice, or case simulations."
+    )
+
+    # keep theme toggle
     is_dark_on = st.session_state.theme == "dark"
     toggled = st.toggle("Dark Mode", value=is_dark_on, key="theme_toggle", help="Switch themes")
     if toggled != is_dark_on:
@@ -389,26 +756,22 @@ with st.sidebar:
         st.rerun()
 
     st.divider()
-    # Teaching Mode controls style/depth; follow-up always on
-    st.session_state.teaching_mode = st.toggle(
-        "Teaching Mode (tutor-style answers + clearer steps)",
-        value=st.session_state.teaching_mode,
-        help="When on, explanations are stepwise with definitions and examples."
-    )
+
+    # Teaching Mode flag still controls depth/style in chat
+    st.session_state.teaching_mode = (st.session_state.mode == "Teaching")
 
     st.header("Voice Settings")
     st.session_state.voice_enabled = st.toggle("Enable Voice Chat", value=st.session_state.voice_enabled, help="Enable voice input and spoken responses.")
 
-    if st.session_state.voice_enabled:
+    if st.session_state.voice_enabled and st.session_state.mode in ["Chat", "Teaching"]:
         input_accent_options = {
             'American (US)': 'en-US', 'British (UK)': 'en-GB', 'Indian': 'en-IN',
             'Australian': 'en-AU', 'Canadian': 'en-CA', 'South African': 'en-ZA'
         }
-        current_accent_index = 0
         try:
             current_accent_index = list(input_accent_options.values()).index(st.session_state.input_accent)
         except ValueError:
-            pass
+            current_accent_index = 0
         selected_input_label = st.selectbox("Your Accent (for input)", options=list(input_accent_options.keys()), index=current_accent_index)
         st.session_state.input_accent = input_accent_options[selected_input_label]
         
@@ -419,32 +782,20 @@ with st.sidebar:
             index=list(output_accent_options.values()).index(st.session_state.output_accent)
         )]
 
-st.markdown(f"""
-<style>
-    .stApp {{ background: {THEME['bg']}; color: {THEME['text']}; }}
-    .topbar-custom {{ background: {THEME['bar']}; border-radius: 16px; padding: 1.3em 1.2em 1.15em 2.1em; margin-bottom: 1.6em; box-shadow: 0 2px 12px 0 rgba(44,46,66,0.06); font-size: 1.55rem; font-weight: 800; letter-spacing: .02em; }}
-    .msg-user {{ background: {THEME['user']}; color: {THEME['text']}; border-radius: 16px 16px 4px 20px; margin-bottom: 0.3em; padding: 1em 1.35em; width: fit-content; max-width: 85%; font-size: 1.13rem; border: 1.5px solid {THEME['border']}; margin-left: auto; margin-right: 0; text-align: right; box-shadow: 0 1px 12px 0 rgba(55,96,148,0.05); word-break: break-word; }}
-    .msg-bot {{ background: {THEME['bot']}; color: {THEME['text']}; border-radius: 16px 16px 20px 4px; margin-bottom: 0.7em; padding: 1.08em 1.23em 1em 1.18em; width: fit-content; max-width: 85%; font-size: 1.13rem; border: 1.5px solid {THEME['border']}; margin-right: auto; margin-left: 0; text-align: left; box-shadow: 0 1px 12px 0 rgba(44,46,66,0.05); word-break: break-word; }}
-    [data-testid="stExpander"] {{ border-color: {THEME['border']}; background: {THEME['expander']}; }}
-    .stButton>button, .stDownloadButton>button {{ border: 1px solid {THEME['border']}; }}
-    .note-text {{ color: #787878; font-size: 0.9rem; }}
-    @media only screen and (max-width: 768px) {{ .topbar-custom {{ font-size: 1.2rem; padding: 1em; text-align: center; }} .msg-user, .msg-bot {{ font-size: 0.95rem; max-width: 95%; }} }}
-</style>
-""", unsafe_allow_html=True)
+# --- Conversation history display (chat modes only) --------------------------
+if st.session_state.mode in ["Chat", "Teaching"]:
+    for entry in st.session_state.chat_history:
+        if "user" in entry:
+            st.markdown(f"<div class='msg-user'>{entry['user']}</div>", unsafe_allow_html=True)
+        else:
+            st.markdown(f"<div class='msg-bot'>{entry['bot']}</div>", unsafe_allow_html=True)
+            if entry.get("pdf_filename"):
+                pdf_path = os.path.join(CHEATSHEET_PATH, entry["pdf_filename"])
+                if os.path.exists(pdf_path):
+                    with open(pdf_path, "rb") as pdf_file:
+                        st.download_button("📥 Download Cheatsheet", pdf_file.read(), entry["pdf_filename"], "application/pdf", key=f"dl_{entry['pdf_filename']}_{uuid.uuid4()}")
 
-st.markdown("<div class='topbar-custom'>Ophtha Bot : AI Chatbot for Postgrad Ophthalmology Students</div>", unsafe_allow_html=True)
-
-for entry in st.session_state.chat_history:
-    if "user" in entry:
-        st.markdown(f"<div class='msg-user'>{entry['user']}</div>", unsafe_allow_html=True)
-    else:
-        st.markdown(f"<div class='msg-bot'>{entry['bot']}</div>", unsafe_allow_html=True)
-        if entry.get("pdf_filename"):
-            pdf_path = os.path.join(CHEATSHEET_PATH, entry["pdf_filename"])
-            if os.path.exists(pdf_path):
-                with open(pdf_path, "rb") as pdf_file:
-                    st.download_button("📥 Download Cheatsheet", pdf_file.read(), entry["pdf_filename"], "application/pdf", key=f"dl_{entry['pdf_filename']}_{uuid.uuid4()}")
-
+# --- Upload Document (kept as-is; available in all modes) --------------------
 with st.expander("Upload a Custom Document"):
     uploaded_file = st.file_uploader("Upload a PDF", type="pdf")
     if uploaded_file and st.button("Process Document"):
@@ -468,33 +819,42 @@ if st.session_state.active_doc_name:
         st.session_state.chat_history.append({"bot": f"Reverted to default knowledge base.<br><span class='note-text'>{disclaimer_text}</span>"})
         st.rerun()
 
-user_prompt = None
-if st.session_state.voice_enabled:
-    user_prompt = speech_to_text(language=st.session_state.input_accent, use_container_width=True, just_once=True, key='STT')
+# --- Main areas per MODE -----------------------------------------------------
+if st.session_state.mode == "Exam":
+    render_exam_ui()
+
+elif st.session_state.mode == "Case":
+    render_case_ui()
+
 else:
-    user_prompt = st.chat_input("Type your question here...")
+    # ============ Chat / Teaching modes use original chat flow ===============
+    user_prompt = None
+    if st.session_state.voice_enabled:
+        user_prompt = speech_to_text(language=st.session_state.input_accent, use_container_width=True, just_once=True, key='STT')
+    else:
+        user_prompt = st.chat_input("Type your question here...")
 
-if user_prompt:
-    st.markdown(f"<div class='msg-user'>{user_prompt}</div>", unsafe_allow_html=True)
-    st.session_state.chat_history.append({"user": user_prompt})
+    if user_prompt:
+        st.markdown(f"<div class='msg-user'>{user_prompt}</div>", unsafe_allow_html=True)
+        st.session_state.chat_history.append({"user": user_prompt})
 
-    with st.spinner("Thinking..."):
-        answer, pdf_filename = handle_query_logic(user_prompt, st.session_state.get("session_id"))
-        clean_text = re.sub(r'<.*?>', '', answer); raw_answer_text = clean_text.replace('`', '').replace('*', '')
-        full_answer_html = f"{answer}<br><span class='note-text'>{disclaimer_text}</span>"
-        
-        st.markdown(f"<div class='msg-bot'>{full_answer_html}</div>", unsafe_allow_html=True)
+        with st.spinner("Thinking..."):
+            answer, pdf_filename = handle_query_logic(user_prompt, st.session_state.get("session_id"))
+            clean_text = re.sub(r'<.*?>', '', answer); raw_answer_text = clean_text.replace('`', '').replace('*', '')
+            full_answer_html = f"{answer}<br><span class='note-text'>{disclaimer_text}</span>"
+            
+            st.markdown(f"<div class='msg-bot'>{full_answer_html}</div>", unsafe_allow_html=True)
 
-        if st.session_state.voice_enabled:
-            spoken_text = raw_answer_text + " Is there anything else I can help with?"
-            audio_b64 = text_to_audio_b64(spoken_text, st.session_state.output_accent)
-            if audio_b64:
-                render_audio_player_b64(audio_b64)
+            if st.session_state.voice_enabled:
+                spoken_text = raw_answer_text + " Anything you'd like to explore next?"
+                audio_b64 = text_to_audio_b64(spoken_text, st.session_state.output_accent)
+                if audio_b64:
+                    render_audio_player_b64(audio_b64)
 
-        if pdf_filename:
-            pdf_path = os.path.join(CHEATSHEET_PATH, pdf_filename)
-            if os.path.exists(pdf_path):
-                with open(pdf_path, "rb") as pdf_file:
-                    st.download_button("📥 Download Cheatsheet", pdf_file.read(), pdf_filename, "application/pdf", key=f"dl_{pdf_filename}_{uuid.uuid4()}")
+            if pdf_filename:
+                pdf_path = os.path.join(CHEATSHEET_PATH, pdf_filename)
+                if os.path.exists(pdf_path):
+                    with open(pdf_path, "rb") as pdf_file:
+                        st.download_button("📥 Download Cheatsheet", pdf_file.read(), pdf_filename, "application/pdf", key=f"dl_{pdf_filename}_{uuid.uuid4()}")
 
-        st.session_state.chat_history.append({"bot": full_answer_html, "pdf_filename": pdf_filename})
+            st.session_state.chat_history.append({"bot": full_answer_html, "pdf_filename": pdf_filename})
