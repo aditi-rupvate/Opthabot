@@ -36,7 +36,7 @@ os.makedirs(CHEATSHEET_PATH, exist_ok=True)
 # --- DISCLAIMER ---
 disclaimer_text = "— Note: This output is for academic purposes only and must not be used for clinical diagnosis."
 
-# === Ophthalmology gate (add-only) ===========================================
+# === Ophthalmology gate ======================================================
 OPHTH_KEYWORDS = [
     "eye", "ocular", "ophthalmology", "ophthalmic", "vision", "visual acuity", "refraction",
     "cornea", "conjunctiva", "sclera", "anterior chamber", "iris", "pupil", "lens",
@@ -71,7 +71,7 @@ DOMAIN_REFUSAL = (
     "I'm specialised in ophthalmology (eye care) and basic greetings only. "
     "Please ask an eye-related question."
 )
-# ============================================================================ 
+# ============================================================================
 
 # --- Backend Components ---
 embeddings = GoogleGenerativeAIEmbeddings(model="models/embedding-001", google_api_key=GOOGLE_API_KEY)
@@ -79,12 +79,6 @@ llm = ChatGoogleGenerativeAI(model="gemini-1.5-flash-latest", temperature=0.3, g
 
 # ---------------- DYNAMIC FOLLOW-UP (warmer, human tone) --------------------
 def generate_teaching_followup(user_q: str, explanation: str) -> str:
-    """
-    ONE short, emotionally intelligent follow-up line:
-      - Gentle check, offer to simplify, or tiny self-check (MCQ/short answer).
-      - Supportive, conversational tone with contractions.
-      - Max 20 words. No emojis/preamble. Don’t reveal answers.
-    """
     tmpl = PromptTemplate.from_template(
         """You are an empathetic ophthalmology tutor with a warm, human style.
 Write ONE short, emotionally intelligent follow-up line that best fits the learner and the content.
@@ -95,9 +89,8 @@ Choose exactly ONE:
 - A tiny self-check (MCQ/short answer, no answer revealed).
 
 Tone & style:
-- Supportive, conversational, encouraging. Use contractions.
-- Avoid robotic phrasing like "Did you understand?" or "Do you want me to explain it easier?".
-- Vary natural wording; sound like a caring clinician-teacher, not a script.
+- Supportive, conversational. Use contractions.
+- Avoid robotic phrasing like "Did you understand?".
 - Max 20 words. No preamble. No emojis.
 
 Context
@@ -111,9 +104,8 @@ Return only the single follow-up line:"""
     line = re.sub(r"`+", "", out).split("\n")[0]
     line = re.sub(r"\s+", " ", line).strip()
     return line[:200]
-# ---------------------------------------------------------------------------
 
-# --- Text-to-Speech: mobile-safe (returns base64 + renders HTML audio) ---
+# --- Text-to-Speech ---
 def text_to_audio_b64(text: str, tld: str) -> str | None:
     try:
         tts = gTTS(text=text, lang='en', tld=tld, slow=False)
@@ -169,39 +161,28 @@ def render_audio_player_b64(audio_b64: str):
 
 # ---- Unicode-safe PDF creators for Exam & Case downloads ----
 def create_exam_pdf(rows, meta) -> str:
-    """Create a PDF summarizing an MCQ session. Returns file path."""
     pdf = FPDF()
     pdf.set_auto_page_break(auto=True, margin=15)
     pdf.add_page()
-
-    # Try full Unicode; fall back to Latin-1 safe
     try:
         pdf.add_font("DejaVu", "", "DejaVuSans.ttf", uni=True)
         pdf.add_font("DejaVu", "B", "DejaVuSans-Bold.ttf", uni=True)
-        # Attempt italic face for explanations
         try:
             pdf.add_font("DejaVu", "I", "DejaVuSans-Oblique.ttf", uni=True)
             has_italic = True
         except Exception:
             has_italic = False
-        FONT = "DejaVu"
-        unicode_ok = True
+        FONT = "DejaVu"; unicode_ok = True
     except RuntimeError:
-        FONT = "Helvetica"     # core font has implicit I/B support
-        unicode_ok = False
-        has_italic = True
+        FONT = "Helvetica"; unicode_ok = False; has_italic = True
 
     def safe(txt: str) -> str:
-        if unicode_ok:
-            return txt
-        return txt.encode("latin-1", "ignore").decode("latin-1")
+        return txt if unicode_ok else txt.encode("latin-1", "ignore").decode("latin-1")
 
     check = "✔ " if unicode_ok else "[OK] "
     cross = "✖ " if unicode_ok else "[X] "
 
-    pdf.set_font(FONT, "B", 16)
-    pdf.cell(0, 10, safe("Ophthalmology MCQ Session"), ln=1)
-
+    pdf.set_font(FONT, "B", 16); pdf.cell(0, 10, safe("Ophthalmology MCQ Session"), ln=1)
     pdf.set_font(FONT, "", 11)
     meta_line = (
         f"Topic: {meta.get('topic','-')}  |  "
@@ -209,30 +190,24 @@ def create_exam_pdf(rows, meta) -> str:
         f"Attempted: {meta.get('attempted',0)}  |  "
         f"Generated: {meta.get('generated_at','')}"
     )
-    pdf.multi_cell(0, 6, safe(meta_line))
-    pdf.ln(2)
+    pdf.multi_cell(0, 6, safe(meta_line)); pdf.ln(2)
 
     for r in rows:
         pdf.set_font(FONT, "B", 12)
         pdf.multi_cell(0, 7, safe(f"Q{r['index']}. {r['question']}"))
         pdf.set_font(FONT, "", 11)
-        for key in ["A", "B", "C", "D"]:
-            prefix = ""
-            if r["correct"] == key:
-                prefix = check
+        for key in ["A","B","C","D"]:
+            prefix = check if r["correct"] == key else ""
             if r["selected"] == key and r["selected"] != r["correct"]:
                 prefix = cross
             pdf.multi_cell(0, 6, safe(f"{prefix}{key}. {r[key]}"))
-        # Italic for explanation if available; else regular
         try:
-            style = "I" if has_italic else ""
-            pdf.set_font(FONT, style, 10)
+            pdf.set_font(FONT, "I" if has_italic else "", 10)
         except RuntimeError:
             pdf.set_font(FONT, "", 10)
-        pdf.set_text_color(60, 60, 60)
+        pdf.set_text_color(60,60,60)
         pdf.multi_cell(0, 5, safe(f"Why: {r['explanation']}"))
-        pdf.set_text_color(0, 0, 0)
-        pdf.ln(2)
+        pdf.set_text_color(0,0,0); pdf.ln(2)
 
     filename = f"exam_mcqs_{datetime.utcnow().strftime('%Y%m%d_%H%M%S')}.pdf"
     filepath = os.path.join(CHEATSHEET_PATH, filename)
@@ -240,68 +215,38 @@ def create_exam_pdf(rows, meta) -> str:
     return filepath
 
 def create_case_pdf(payload) -> str:
-    """Create a PDF for a case interaction. Returns file path."""
     pdf = FPDF()
     pdf.set_auto_page_break(auto=True, margin=15)
     pdf.add_page()
-
-    # Try full Unicode; fall back to Latin-1 safe
     try:
         pdf.add_font("DejaVu", "", "DejaVuSans.ttf", uni=True)
         pdf.add_font("DejaVu", "B", "DejaVuSans-Bold.ttf", uni=True)
-        FONT = "DejaVu"
-        unicode_ok = True
+        FONT = "DejaVu"; unicode_ok = True
     except RuntimeError:
-        FONT = "Helvetica"
-        unicode_ok = False
+        FONT = "Helvetica"; unicode_ok = False
 
     def safe(txt: str) -> str:
-        if unicode_ok:
-            return txt
-        return txt.encode("latin-1", "ignore").decode("latin-1")
+        return txt if unicode_ok else txt.encode("latin-1", "ignore").decode("latin-1")
 
-    pdf.set_font(FONT, "B", 16)
-    pdf.cell(0, 10, safe("Ophthalmology Case Interaction"), ln=1)
-
+    pdf.set_font(FONT, "B", 16); pdf.cell(0, 10, safe("Ophthalmology Case Interaction"), ln=1)
     pdf.set_font(FONT, "", 11)
     pdf.multi_cell(0, 6, safe(f"Topic: {payload.get('topic','-')}"))
-    pdf.multi_cell(0, 6, safe(f"Generated: {payload.get('generated_at','')}"))
-    pdf.ln(2)
-
-    pdf.set_font(FONT, "B", 12)
-    pdf.multi_cell(0, 7, safe(f"Title: {payload.get('title','')}"))
+    pdf.multi_cell(0, 6, safe(f"Generated: {payload.get('generated_at','')}")); pdf.ln(2)
+    pdf.set_font(FONT, "B", 12); pdf.multi_cell(0, 7, safe(f"Title: {payload.get('title','')}"))
+    pdf.set_font(FONT, "", 11); pdf.multi_cell(0, 6, safe(f"Scenario: {payload.get('scenario','')}")); pdf.ln(1)
+    pdf.set_font(FONT, "B", 12); pdf.multi_cell(0, 7, safe("Your Response"))
+    pdf.set_font(FONT, "", 11); pdf.multi_cell(0, 6, safe(payload.get("learner_response","")))
+    fb = payload.get("feedback", {}); strengths = fb.get("strengths", []); missed = fb.get("missed", []); suggestions = fb.get("suggestions", "")
+    pdf.ln(2); pdf.set_font(FONT, "B", 12); pdf.multi_cell(0, 7, safe("Feedback"))
     pdf.set_font(FONT, "", 11)
-    pdf.multi_cell(0, 6, safe(f"Scenario: {payload.get('scenario','')}"))
-    pdf.ln(1)
-
-    pdf.set_font(FONT, "B", 12)
-    pdf.multi_cell(0, 7, safe("Your Response"))
-    pdf.set_font(FONT, "", 11)
-    pdf.multi_cell(0, 6, safe(payload.get("learner_response","")))
-
-    fb = payload.get("feedback", {})
-    strengths = fb.get("strengths", [])
-    missed = fb.get("missed", [])
-    suggestions = fb.get("suggestions", "")
-
-    pdf.ln(2)
-    pdf.set_font(FONT, "B", 12); pdf.multi_cell(0, 7, safe("Feedback"))
-    pdf.set_font(FONT, "", 11)
-    if strengths:
-        pdf.multi_cell(0, 6, safe("What you did well: " + "; ".join(strengths)))
-    if missed:
-        pdf.multi_cell(0, 6, safe("What to add next time: " + "; ".join(missed)))
-    if suggestions:
-        pdf.multi_cell(0, 6, safe("Suggestions: " + suggestions))
-
+    if strengths: pdf.multi_cell(0, 6, safe("What you did well: " + "; ".join(strengths)))
+    if missed:    pdf.multi_cell(0, 6, safe("What to add next time: " + "; ".join(missed)))
+    if suggestions: pdf.multi_cell(0, 6, safe("Suggestions: " + suggestions))
     sc = payload.get("score", {})
-    pdf.ln(1)
-    pdf.multi_cell(0, 6, safe(f"Score: {sc.get('achieved',0)}/100 — {sc.get('explanation','')}"))
-
+    pdf.ln(1); pdf.multi_cell(0, 6, safe(f"Score: {sc.get('achieved',0)}/100 — {sc.get('explanation','')}"))
     filename = f"case_interaction_{datetime.utcnow().strftime('%Y%m%d_%H%M%S')}.pdf"
     filepath = os.path.join(CHEATSHEET_PATH, filename)
-    pdf.output(filepath)
-    return filepath
+    pdf.output(filepath); return filepath
 
 # --- PDF Generation Class (cheatsheet; unchanged) ---------------------------
 class PDF(FPDF):
@@ -311,11 +256,9 @@ class PDF(FPDF):
     def header(self):
         self.set_font("DejaVu", "B", 9)
         self.set_text_color(128, 128, 128)
-        self.cell(0, 10, f"Ophthalmology Cheatsheet: {self.topic.title()}", 0, 0, 'L')
-        self.ln(10)
+        self.cell(0, 10, f"Ophthalmology Cheatsheet: {self.topic.title()}", 0, 0, 'L'); self.ln(10)
     def footer(self):
-        self.set_y(-15)
-        self.set_font("DejaVu", "", 8)
+        self.set_y(-15); self.set_font("DejaVu", "", 8)
         self.set_text_color(128, 128, 128)
         self.cell(0, 10, f"Page {self.page_no()}/{{nb}}", 0, 0, 'C')
 
@@ -325,62 +268,40 @@ def create_formatted_pdf(text_content: str, topic: str) -> str:
         pdf.add_font("DejaVu", "", "DejaVuSans.ttf", uni=True)
         pdf.add_font("DejaVu", "B", "DejaVuSans-Bold.ttf", uni=True)
     except RuntimeError:
-        st.error("Could not find 'DejaVuSans.ttf' or 'DejaVuSans-Bold.ttf'.")
-        return ""
-    pdf.alias_nb_pages()
-    pdf.add_page()
-    pdf.set_margins(15, 15, 15)
-    pdf.set_auto_page_break(auto=True, margin=20)
-    pdf.set_font("DejaVu", "B", 20)
-    pdf.set_text_color(40, 40, 40)
-    pdf.multi_cell(0, 10, f"Cheatsheet: {topic.title()}", 0, 'C')
-    pdf.ln(2)
-    pdf.set_draw_color(200, 200, 200)
-    pdf.line(pdf.get_x(), pdf.get_y(), pdf.get_x() + 180, pdf.get_y())
-    pdf.ln(10)
-    line_height = 7
-    pdf.set_text_color(50, 50, 50)
+        st.error("Could not find 'DejaVuSans.ttf' or 'DejaVuSans-Bold.ttf'."); return ""
+    pdf.alias_nb_pages(); pdf.add_page()
+    pdf.set_margins(15, 15, 15); pdf.set_auto_page_break(auto=True, margin=20)
+    pdf.set_font("DejaVu", "B", 20); pdf.set_text_color(40, 40, 40)
+    pdf.multi_cell(0, 10, f"Cheatsheet: {topic.title()}", 0, 'C'); pdf.ln(2)
+    pdf.set_draw_color(200, 200, 200); pdf.line(pdf.get_x(), pdf.get_y(), pdf.get_x() + 180, pdf.get_y()); pdf.ln(10)
+    line_height = 7; pdf.set_text_color(50, 50, 50)
     for line in text_content.split('\n'):
-        line = strip = line.strip()
-        if not line:
-            continue
+        line = line.strip()
+        if not line: continue
         if line.startswith('## '):
-            pdf.set_font("DejaVu", "B", 14)
-            pdf.set_text_color(0, 80, 150)
+            pdf.set_font("DejaVu", "B", 14); pdf.set_text_color(0, 80, 150)
             pdf.multi_cell(0, line_height, line.replace('## ', ''), 0, 'L')
-            pdf.set_text_color(50, 50, 50)
-            pdf.ln(2)
+            pdf.set_text_color(50, 50, 50); pdf.ln(2)
         elif line.startswith('- '):
-            pdf.set_font("DejaVu", "", 11)
-            pdf.set_x(20)
-            pdf.multi_cell(0, line_height, f"• {line.replace('- ', '', 1)}")
-            pdf.ln(1)
+            pdf.set_font("DejaVu", "", 11); pdf.set_x(20)
+            pdf.multi_cell(0, line_height, f"• {line.replace('- ', '', 1)}"); pdf.ln(1)
         else:
-            pdf.set_font("DejaVu", "", 11)
-            pdf.multi_cell(0, line_height, line)
-    pdf.ln(5)
-    pdf.set_draw_color(200, 200, 200)
-    x = pdf.get_x()
-    pdf.line(x, pdf.get_y(), x + 180, pdf.get_y())
-    pdf.ln(4)
-    pdf.set_font("DejaVu", "", 8)
-    pdf.set_text_color(120, 120, 120)
+            pdf.set_font("DejaVu", "", 11); pdf.multi_cell(0, line_height, line)
+    pdf.ln(5); pdf.set_draw_color(200, 200, 200)
+    x = pdf.get_x(); pdf.line(x, pdf.get_y(), x + 180, pdf.get_y()); pdf.ln(4)
+    pdf.set_font("DejaVu", "", 8); pdf.set_text_color(120, 120, 120)
     pdf.multi_cell(0, 6, "Note: This content is for academic purposes only and must not be used for clinical diagnosis.")
     clean_topic = re.sub(r'[\W_]+', '_', topic).lower()
-    filename = f"{clean_topic}_cheatsheet.pdf"
-    filepath = os.path.join(CHEATSHEET_PATH, filename)
-    pdf.output(filepath)
-    return filename
+    filename = f"{clean_topic}_cheatsheet.pdf"; filepath = os.path.join(CHEATSHEET_PATH, filename)
+    pdf.output(filepath); return filename
 
 # --- RAG/Chat Logic ----------------------------------------------------------
 def handle_query_logic(query: str, session_id: str = None):
-    # Domain gate
     if _is_greeting(query):
         return "Hello! I’m your ophthalmology-only assistant. How can I help with eyes/vision today?", None
     if not _is_ophthalmology(query):
         return DOMAIN_REFUSAL, None
 
-    # Choose KB
     if session_id:
         temp_db_path = os.path.join(TEMP_STORAGE_PATH, session_id)
         if not os.path.exists(temp_db_path):
@@ -392,7 +313,6 @@ def handle_query_logic(query: str, session_id: str = None):
         db = FAISS.load_local(FAISS_INDEX_PATH, embeddings, allow_dangerous_deserialization=True)
     retriever = db.as_retriever(search_type="similarity", search_kwargs={"k": 5})
 
-    # Chains
     def question_answer_func(q: str) -> str:
         chain = RetrievalQA.from_chain_type(llm=llm, chain_type="stuff", retriever=retriever)
         return chain.invoke(q)['result']
@@ -426,9 +346,9 @@ def handle_query_logic(query: str, session_id: str = None):
             "You are an expert ophthalmology tutor. Rules: "
             "1) Answer strictly ophthalmology questions. "
             "2) Explain clearly in short steps, define jargon in-line, and use concise examples or analogies when helpful. "
-            "3) Prefer bullet points and short paragraphs; keep focus and avoid fluff. "
+            "3) Prefer bullet points and short paragraphs. "
             "4) Calibrate depth to a postgraduate student. "
-            "5) At the end, do NOT repeat the answer—just include one dynamic follow-up line. "
+            "5) End with one dynamic follow-up line only. "
             "6) Never leave the ophthalmology domain."
         )
     else:
@@ -448,10 +368,9 @@ def handle_query_logic(query: str, session_id: str = None):
             clean_bot_message = re.sub(r'<.*?>', '', msg["bot"])
             memory.chat_memory.add_ai_message(clean_bot_message)
 
-    agent_executor = AgentExecutor(
-        agent=agent, tools=tools, memory=memory,
-        verbose=False, handle_parsing_errors=True, return_intermediate_steps=True
-    )
+    agent_executor = AgentExecutor(agent=agent, tools=tools, memory=memory,
+                                   verbose=False, handle_parsing_errors=True,
+                                   return_intermediate_steps=True)
 
     response = agent_executor.invoke({"input": query})
     final_answer = response.get('output', "I couldn't find an answer.")
@@ -464,7 +383,6 @@ def handle_query_logic(query: str, session_id: str = None):
                 except IndexError:
                     pass
 
-    # Dynamic follow-up on all ophthal answers
     if isinstance(final_answer, str) and final_answer.strip():
         try:
             follow = generate_teaching_followup(query, final_answer)
@@ -475,7 +393,7 @@ def handle_query_logic(query: str, session_id: str = None):
 
     return final_answer, pdf_filename
 
-# ============================= NEW: EXAM MODE ================================
+# ============================= EXAM MODE =====================================
 
 def _parse_json_block(text: str):
     try:
@@ -491,7 +409,6 @@ def _parse_json_block(text: str):
     return None
 
 def generate_mcqs(topic: str, num_q: int = 5):
-    """Return list of dicts: {question, options:[...], correct_index, explanation}"""
     prompt = PromptTemplate.from_template(
         """You are an ophthalmology exam item writer.
 Create {num} high-quality single-best-answer MCQs on: "{topic}"
@@ -520,10 +437,8 @@ Constraints:
     for q in mcqs[:num_q]:
         if isinstance(q, dict) and all(k in q for k in ("question","options","correct_index","explanation")):
             if isinstance(q["options"], list) and len(q["options"]) == 4:
-                try:
-                    ci = int(q["correct_index"])
-                except Exception:
-                    ci = 0
+                try: ci = int(q["correct_index"])
+                except Exception: ci = 0
                 ci = max(0, min(3, ci))
                 clean.append({
                     "question": q["question"].strip(),
@@ -536,28 +451,47 @@ Constraints:
 def render_exam_dashboard(exam_state):
     total = len(exam_state["questions"])
     attempted = len(exam_state["selected"])
-    score = sum(1 for i, sel in exam_state["selected"].items() if sel == exam_state["questions"][i]["correct_index"])
+    unattempted = max(0, total - attempted)
+    score = sum(1 for i, sel in exam_state["selected"].items()
+                if sel == exam_state["questions"][i]["correct_index"])
     st.session_state.exam["score"] = score
-    c1, c2, c3 = st.columns(3)
+    c1, c2, c3, c4 = st.columns(4)
     c1.metric("Total MCQs", total)
     c2.metric("Attempted", attempted)
-    c3.metric("Score", score)
+    c3.metric("Unattempted", unattempted)
+    c4.metric("Score", score)
 
 def render_option_badges(q_idx, opts, correct_idx, selected_idx):
     for j, opt in enumerate(opts):
         cls = "neutral"
         if selected_idx is not None:
-            if j == correct_idx:
-                cls = "correct"
-            if selected_idx == j and j != correct_idx:
-                cls = "wrong"
-        st.markdown(
-            f"<div class='option {cls}'><b>{chr(65+j)}.</b> {opt}</div>",
-            unsafe_allow_html=True
-        )
+            if j == correct_idx: cls = "correct"
+            if selected_idx == j and j != correct_idx: cls = "wrong"
+        st.markdown(f"<div class='option {cls}'><span class='chip'>{chr(65+j)}</span>{opt}</div>",
+                    unsafe_allow_html=True)
 
 def render_exam_ui():
+    # exam-scoped CSS so chat UI is unaffected
+    st.markdown(f"""
+    <style>
+      .exam-scope .card {{ background: {THEME['bot']}; color:{THEME['text']};
+        border-radius:14px; padding:1em 1.1em; border:1px solid {THEME['border']}; }}
+      .exam-scope .card-title {{ font-weight:700; margin-bottom:.6em; }}
+      .exam-scope .option {{ margin:.35em 0; padding:.7em .85em; border:1px solid {THEME['border']};
+        border-radius:12px; background:{THEME['bg']}; display:flex; align-items:center; gap:.6em; }}
+      .exam-scope .option.correct {{ background:#0e4d2e; color:#fff; border-color:#2ea043; }}
+      .exam-scope .option.wrong {{ background:#6b2222; color:#fff; border-color:#f85149; }}
+      .exam-scope .chip {{ display:inline-flex; align-items:center; justify-content:center;
+        width:28px; height:28px; border-radius:999px; font-weight:700; border:1px solid {THEME['border']}; }}
+      .exam-scope .stButton>button {{ width:100%; text-align:left; padding:.80em 1.0em; border-radius:12px;
+        border:1px solid {THEME['border']}; box-shadow:0 1px 6px rgba(0,0,0,.08); }}
+      .exam-scope .stButton>button:hover {{ transform: translateY(-1px); }}
+      .exam-scope .gridgap > div > div {{ margin-bottom:.35rem; }}
+    </style>
+    """, unsafe_allow_html=True)
+
     st.markdown("<div class='topbar-custom'>Exam Mode · MCQ Practice</div>", unsafe_allow_html=True)
+    st.markdown("<div class='exam-scope'>", unsafe_allow_html=True)
 
     topic = st.text_input("Topic for MCQs (ophthalmology only)", placeholder="e.g., Primary open-angle glaucoma")
     cols = st.columns([1,1,2])
@@ -565,7 +499,8 @@ def render_exam_ui():
         num_q = st.number_input("Number of MCQs", min_value=1, max_value=20, value=5, step=1)
     with cols[1]:
         if st.button("Generate MCQs", use_container_width=True, type="primary"):
-            mcqs = generate_mcqs(topic or "general ophthalmology", int(num_q))
+            with st.spinner("Generating MCQs…"):
+                mcqs = generate_mcqs(topic or "general ophthalmology", int(num_q))
             st.session_state.exam = {
                 "topic": topic or "general ophthalmology",
                 "generated_at": datetime.utcnow().isoformat() + "Z",
@@ -578,24 +513,27 @@ def render_exam_ui():
     exam_state = st.session_state.get("exam", None)
     if not exam_state or not exam_state.get("questions"):
         st.info("Enter a topic and click **Generate MCQs** to start.")
+        st.markdown("</div>", unsafe_allow_html=True)
         return
 
-    # Dashboard
     render_exam_dashboard(exam_state)
     st.markdown("<br/>", unsafe_allow_html=True)
 
-    # Render each MCQ card (buttons before selection, badges after)
     for i, q in enumerate(exam_state["questions"]):
         st.markdown(f"<div class='card'><div class='card-title'>Q{i+1}. {q['question']}</div>", unsafe_allow_html=True)
         selected = exam_state["selected"].get(i, None)
 
         if selected is None:
-            # BEFORE selection: show clickable buttons only
-            bcols = st.columns(2)
+            # BEFORE selection: two-column button grid, tighter gaps
+            bcols = st.columns(2, gap="small")
             for j, opt in enumerate(q["options"]):
-                if bcols[j % 2].button(f"{chr(65+j)}. {opt}", key=f"mcq_{i}_{j}"):
-                    st.session_state.exam["selected"][i] = j
-                    st.rerun()
+                with bcols[j % 2]:
+                    st.markdown("<div class='gridgap'>", unsafe_allow_html=True)
+                    if st.button(f"{chr(65+j)}. {opt}", key=f"mcq_{i}_{j}"):
+                        with st.spinner("Checking…"):
+                            st.session_state.exam["selected"][i] = j
+                        st.rerun()
+                    st.markdown("</div>", unsafe_allow_html=True)
         else:
             # AFTER selection: show colored badges + feedback (no buttons)
             render_option_badges(i, q["options"], q["correct_index"], selected)
@@ -608,7 +546,6 @@ def render_exam_ui():
         st.markdown("</div>", unsafe_allow_html=True)  # end card
         st.markdown("<br/>", unsafe_allow_html=True)
 
-    # Refresh dashboard after answers
     render_exam_dashboard(st.session_state.exam)
 
     # Downloads (CSV + PDF only)
@@ -616,12 +553,8 @@ def render_exam_ui():
     for i, q in enumerate(st.session_state.exam["questions"]):
         sel = st.session_state.exam["selected"].get(i, None)
         rows.append({
-            "index": i+1,
-            "question": q["question"],
-            "A": q["options"][0],
-            "B": q["options"][1],
-            "C": q["options"][2],
-            "D": q["options"][3],
+            "index": i+1, "question": q["question"],
+            "A": q["options"][0], "B": q["options"][1], "C": q["options"][2], "D": q["options"][3],
             "selected": "" if sel is None else chr(65+sel),
             "correct": chr(65+q["correct_index"]),
             "is_correct": sel == q["correct_index"] if sel is not None else None,
@@ -631,16 +564,13 @@ def render_exam_ui():
     if rows:
         csv_buf = io.StringIO()
         writer = csv.DictWriter(csv_buf, fieldnames=list(rows[0].keys()))
-        writer.writeheader()
-        writer.writerows(rows)
+        writer.writeheader(); writer.writerows(rows)
         st.download_button(
             "📥 Download MCQ Session (CSV)",
             data=csv_buf.getvalue().encode("utf-8"),
             file_name=f"exam_mcqs_{datetime.utcnow().strftime('%Y%m%d_%H%M%S')}.csv",
-            mime="text/csv",
-            use_container_width=True
+            mime="text/csv", use_container_width=True
         )
-
         meta = {
             "topic": st.session_state.exam.get("topic"),
             "generated_at": st.session_state.exam.get("generated_at"),
@@ -648,20 +578,20 @@ def render_exam_ui():
             "attempted": len(st.session_state.exam.get("selected", {})),
             "total": len(st.session_state.exam.get("questions", []))
         }
-        pdf_path = create_exam_pdf(rows, meta)
+        with st.spinner("Preparing PDF…"):
+            pdf_path = create_exam_pdf(rows, meta)
         with open(pdf_path, "rb") as f:
             st.download_button(
                 "📥 Download MCQ Session (PDF)",
-                data=f.read(),
-                file_name=os.path.basename(pdf_path),
-                mime="application/pdf",
-                use_container_width=True
+                data=f.read(), file_name=os.path.basename(pdf_path),
+                mime="application/pdf", use_container_width=True
             )
 
-# ============================ NEW: CASE MODE =================================
+    st.markdown("</div>", unsafe_allow_html=True)  # close .exam-scope
+
+# ============================ CASE MODE ======================================
 
 def generate_case(topic: str):
-    """Return dict with a scenario and evaluation keys."""
     prompt = PromptTemplate.from_template(
         """You are an ophthalmology simulation author.
 Create ONE realistic case vignette (brief) for postgraduate level on: "{topic}"
@@ -686,7 +616,6 @@ Output ONLY JSON as:
     return {"title": title, "scenario": scenario, "key_points": key_points}
 
 def evaluate_case_response(scenario: str, key_points, user_answer: str):
-    """Generate feedback + score using key_points as rubric."""
     rubric = "; ".join(key_points[:8])
     prompt = PromptTemplate.from_template(
         """You are grading a short free-text response for an ophthalmology case.
@@ -722,12 +651,11 @@ def render_case_ui():
     c1, c2 = st.columns([1,1])
     with c1:
         if st.button("Generate Case", type="primary", use_container_width=True):
-            c = generate_case(topic or "general ophthalmology")
+            with st.spinner("Generating case…"):
+                c = generate_case(topic or "general ophthalmology")
             st.session_state.case = {
                 "topic": topic or "general ophthalmology",
-                "case": c,
-                "response": "",
-                "graded": None,
+                "case": c, "response": "", "graded": None,
                 "generated_at": datetime.utcnow().isoformat() + "Z"
             }
             st.rerun()
@@ -744,15 +672,15 @@ def render_case_ui():
             <div class='case-title'>{c['title']}</div>
             <div class='case-body'>{c['scenario']}</div>
         </div>
-        """,
-        unsafe_allow_html=True
+        """, unsafe_allow_html=True
     )
 
     st.markdown("<div class='case-instr'>Write your impression and next steps (investigations/initial management).</div>", unsafe_allow_html=True)
     st.session_state.case["response"] = st.text_area("Your response", value=case_state.get("response",""), height=160, placeholder="Type your reasoning here…")
 
     if st.button("Submit Answer", type="primary", use_container_width=True):
-        fb, sc = evaluate_case_response(c["scenario"], c.get("key_points", []), st.session_state.case["response"])
+        with st.spinner("Scoring your response…"):
+            fb, sc = evaluate_case_response(c["scenario"], c.get("key_points", []), st.session_state.case["response"])
         st.session_state.case["graded"] = {"feedback": fb, "score": sc}
         st.rerun()
 
@@ -782,30 +710,20 @@ def render_case_ui():
             st.caption(f"Scoring note: {score_exp}")
         st.markdown("</div>", unsafe_allow_html=True)
 
-        # Downloads (CSV + PDF only)
         payload = {
             "topic": case_state.get("topic"),
             "generated_at": case_state.get("generated_at"),
-            "title": c["title"],
-            "scenario": c["scenario"],
+            "title": c["title"], "scenario": c["scenario"],
             "learner_response": st.session_state.case["response"],
-            "feedback": graded["feedback"],
-            "score": graded["score"]
+            "feedback": graded["feedback"], "score": graded["score"]
         }
 
-        # CSV (single row)
         csv_buf = io.StringIO()
-        fields = [
-            "topic","generated_at","title","scenario","learner_response",
-            "strengths","missed","suggestions","score","score_note"
-        ]
-        writer = csv.DictWriter(csv_buf, fieldnames=fields)
-        writer.writeheader()
+        fields = ["topic","generated_at","title","scenario","learner_response","strengths","missed","suggestions","score","score_note"]
+        writer = csv.DictWriter(csv_buf, fieldnames=fields); writer.writeheader()
         writer.writerow({
-            "topic": payload["topic"],
-            "generated_at": payload["generated_at"],
-            "title": payload["title"],
-            "scenario": payload["scenario"],
+            "topic": payload["topic"], "generated_at": payload["generated_at"],
+            "title": payload["title"], "scenario": payload["scenario"],
             "learner_response": payload["learner_response"],
             "strengths": "; ".join(payload["feedback"].get("strengths", [])),
             "missed": "; ".join(payload["feedback"].get("missed", [])),
@@ -817,26 +735,22 @@ def render_case_ui():
             "📥 Download Case Interaction (CSV)",
             data=csv_buf.getvalue().encode("utf-8"),
             file_name=f"case_interaction_{datetime.utcnow().strftime('%Y%m%d_%H%M%S')}.csv",
-            mime="text/csv",
-            use_container_width=True
+            mime="text/csv", use_container_width=True
         )
-
-        # PDF
-        pdf_path = create_case_pdf(payload)
+        with st.spinner("Preparing PDF…"):
+            pdf_path = create_case_pdf(payload)
         with open(pdf_path, "rb") as f:
             st.download_button(
                 "📥 Download Case Interaction (PDF)",
-                data=f.read(),
-                file_name=os.path.basename(pdf_path),
-                mime="application/pdf",
-                use_container_width=True
+                data=f.read(), file_name=os.path.basename(pdf_path),
+                mime="application/pdf", use_container_width=True
             )
 
 # --- Theme Palettes ---
 LIGHT = {"bg": "#f8fafb", "bar": "#fff", "bot": "#e9eef6", "user": "#d1e7dd", "text": "#191b22", "input": "#e8edf2", "border": "#d4dde7", "expander": "#f4f7fb"}
-DARK = {"bg": "#202126", "bar": "#232733", "bot": "#232733", "user": "#22577a", "text": "#f3f5f8", "input": "#242730", "border": "#26282f", "expander": "#24272e"}
+DARK  = {"bg": "#202126", "bar": "#232733", "bot": "#232733", "user": "#22577a", "text": "#f3f5f8", "input": "#242730", "border": "#26282f", "expander": "#24272e"}
 
-# Initialize session state variables
+# Session state
 if "theme" not in st.session_state: st.session_state.theme = "dark"
 if "chat_history" not in st.session_state: st.session_state.chat_history = []
 if "session_id" not in st.session_state: st.session_state.session_id = None
@@ -845,11 +759,11 @@ if "voice_enabled" not in st.session_state: st.session_state.voice_enabled = Fal
 if "input_accent" not in st.session_state: st.session_state.input_accent = 'en-US'
 if "output_accent" not in st.session_state: st.session_state.output_accent = 'com'
 if "teaching_mode" not in st.session_state: st.session_state.teaching_mode = False
-if "mode" not in st.session_state: st.session_state.mode = "Chat"  # Chat | Teaching | Exam | Case
+if "mode" not in st.session_state: st.session_state.mode = "Chat"
 
 THEME = DARK if st.session_state.theme == "dark" else LIGHT
 
-# --- Global Styles (cards, options, case visuals + tighter button spacing) ---
+# --- Global styles (shared) ---
 st.markdown(f"""
 <style>
     .stApp {{ background: {THEME['bg']}; color: {THEME['text']}; }}
@@ -879,14 +793,13 @@ st.markdown(f"""
 
 st.markdown("<div class='topbar-custom'>Ophtha Bot : AI Chatbot for Postgrad Ophthalmology Students</div>", unsafe_allow_html=True)
 
-# --- Sidebar: keep Settings (with Dark Mode), then Modes ---------------------
+# --- Sidebar -----------------------------------------------------------------
 with st.sidebar:
     st.header("Settings")
     is_dark_on = st.session_state.theme == "dark"
     toggled = st.toggle("Dark Mode", value=is_dark_on, key="theme_toggle", help="Switch themes")
     if toggled != is_dark_on:
-        st.session_state.theme = "dark" if toggled else "light"
-        st.rerun()
+        st.session_state.theme = "dark" if toggled else "light"; st.rerun()
 
     st.header("Modes")
     st.session_state.mode = st.radio(
@@ -898,13 +811,10 @@ with st.sidebar:
     )
 
     st.divider()
-
-    # Teaching Mode flag still controls depth/style in chat
     st.session_state.teaching_mode = (st.session_state.mode == "Teaching")
 
     st.header("Voice Settings")
     st.session_state.voice_enabled = st.toggle("Enable Voice Chat", value=st.session_state.voice_enabled, help="Enable voice input and spoken responses.")
-
     if st.session_state.voice_enabled and st.session_state.mode in ["Chat", "Teaching"]:
         input_accent_options = {
             'American (US)': 'en-US', 'British (UK)': 'en-GB', 'Indian': 'en-IN',
@@ -916,15 +826,13 @@ with st.sidebar:
             current_accent_index = 0
         selected_input_label = st.selectbox("Your Accent (for input)", options=list(input_accent_options.keys()), index=current_accent_index)
         st.session_state.input_accent = input_accent_options[selected_input_label]
-        
         output_accent_options = {'American (US)': 'com', 'British (UK)': 'co.uk', 'Indian': 'co.in'}
         st.session_state.output_accent = output_accent_options[st.selectbox(
-            "Assistant's Accent (for output)",
-            options=list(output_accent_options.keys()),
+            "Assistant's Accent (for output)", options=list(output_accent_options.keys()),
             index=list(output_accent_options.values()).index(st.session_state.output_accent)
         )]
 
-# --- Conversation history display (chat modes only) --------------------------
+# --- Chat history (Chat/Teaching) -------------------------------------------
 if st.session_state.mode in ["Chat", "Teaching"]:
     for entry in st.session_state.chat_history:
         if "user" in entry:
@@ -937,7 +845,7 @@ if st.session_state.mode in ["Chat", "Teaching"]:
                     with open(pdf_path, "rb") as pdf_file:
                         st.download_button("📥 Download Cheatsheet", pdf_file.read(), entry["pdf_filename"], "application/pdf", key=f"dl_{entry['pdf_filename']}_{uuid.uuid4()}")
 
-# --- Upload Document (kept as-is; available in all modes) --------------------
+# --- Upload Document ---------------------------------------------------------
 with st.expander("Upload a Custom Document"):
     uploaded_file = st.file_uploader("Upload a PDF", type="pdf")
     if uploaded_file and st.button("Process Document"):
@@ -961,7 +869,7 @@ if st.session_state.active_doc_name:
         st.session_state.chat_history.append({"bot": f"Reverted to default knowledge base.<br><span class='note-text'>{disclaimer_text}</span>"})
         st.rerun()
 
-# --- Main areas per MODE -----------------------------------------------------
+# --- Mode router -------------------------------------------------------------
 def render_exam_ui_proxy():
     render_exam_ui()
 
@@ -970,7 +878,6 @@ if st.session_state.mode == "Exam":
 elif st.session_state.mode == "Case":
     render_case_ui()
 else:
-    # ============ Chat / Teaching modes use original chat flow ===============
     user_prompt = None
     if st.session_state.voice_enabled:
         user_prompt = speech_to_text(language=st.session_state.input_accent, use_container_width=True, just_once=True, key='STT')
@@ -980,24 +887,18 @@ else:
     if user_prompt:
         st.markdown(f"<div class='msg-user'>{user_prompt}</div>", unsafe_allow_html=True)
         st.session_state.chat_history.append({"user": user_prompt})
-
         with st.spinner("Thinking..."):
             answer, pdf_filename = handle_query_logic(user_prompt, st.session_state.get("session_id"))
             clean_text = re.sub(r'<.*?>', '', answer); raw_answer_text = clean_text.replace('`', '').replace('*', '')
             full_answer_html = f"{answer}<br><span class='note-text'>{disclaimer_text}</span>"
-            
             st.markdown(f"<div class='msg-bot'>{full_answer_html}</div>", unsafe_allow_html=True)
-
             if st.session_state.voice_enabled:
                 spoken_text = raw_answer_text + " Anything you'd like to explore next?"
                 audio_b64 = text_to_audio_b64(spoken_text, st.session_state.output_accent)
-                if audio_b64:
-                    render_audio_player_b64(audio_b64)
-
+                if audio_b64: render_audio_player_b64(audio_b64)
             if pdf_filename:
                 pdf_path = os.path.join(CHEATSHEET_PATH, pdf_filename)
                 if os.path.exists(pdf_path):
                     with open(pdf_path, "rb") as pdf_file:
                         st.download_button("📥 Download Cheatsheet", pdf_file.read(), pdf_filename, "application/pdf", key=f"dl_{pdf_filename}_{uuid.uuid4()}")
-
             st.session_state.chat_history.append({"bot": full_answer_html, "pdf_filename": pdf_filename})
