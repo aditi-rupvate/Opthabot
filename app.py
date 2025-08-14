@@ -466,27 +466,30 @@ DIFF_GUIDE_CASE = {
 def generate_mcqs(topic: str, num_q: int = 5, difficulty: str = "medium"):
     diff = difficulty if difficulty in DIFF_LEVELS else "medium"
     guide = DIFF_GUIDE_MCQ[diff]
-    prompt = PromptTemplate.from_template(
-        """You are an ophthalmology exam item writer.
-Create {num} high-quality single-best-answer MCQs on: "{topic}"
-Difficulty: {diff}. Design guidance: {guide}
-Constraints:
-- Postgraduate level, strictly ophthalmology.
-- 4 options (A–D). Exactly one correct.
-- Provide a 1–2 line explanation focused on the decision point.
-- Avoid images. Use concise wording.
-Output ONLY JSON as:
-{{
-  "mcqs": [
-    {{
-      "question": "...",
-      "options": ["...", "...", "...", "..."],
-      "correct_index": 0,
-      "explanation": "..."
-    }}
-  ]
-}}
-"""
+    template = (
+        "You are an ophthalmology exam item writer.\n"
+        "Create {num} high-quality single-best-answer MCQs on: \"{topic}\"\n"
+        "Difficulty: {diff}. Design guidance: {guide}\n"
+        "Constraints:\n"
+        "- Postgraduate level, strictly ophthalmology.\n"
+        "- 4 options (A–D). Exactly one correct.\n"
+        "- Provide a 1–2 line explanation focused on the decision point.\n"
+        "- Avoid images. Use concise wording.\n"
+        "Output ONLY JSON as:\n"
+        "{{\n"
+        "  \"mcqs\": [\n"
+        "    {{\n"
+        "      \"question\": \"...\",\n"
+        "      \"options\": [\"...\", \"...\", \"...\", \"...\"],\n"
+        "      \"correct_index\": 0,\n"
+        "      \"explanation\": \"...\"\n"
+        "    }}\n"
+        "  ]\n"
+        "}}\n"
+    )
+    prompt = PromptTemplate(
+        input_variables=["topic", "num", "diff", "guide"],
+        template=template,
     )
     chain = LLMChain(llm=llm, prompt=prompt)
     raw = chain.run(topic=topic, num=num_q, diff=diff, guide=guide)
@@ -682,25 +685,28 @@ def render_exam_ui():
 def generate_case(topic: str, difficulty: str = "medium"):
     diff = difficulty if difficulty in DIFF_LEVELS else "medium"
     guide = DIFF_GUIDE_CASE[diff]
-    prompt = PromptTemplate.from_template(
-        """You are an ophthalmology simulation author.
-Create ONE realistic case vignette (brief) for postgraduate level on: "{topic}"
-Difficulty: {diff}. Design guidance: {guide}
-Include:
-- title
-- scenario (2–5 sentences)
-- key_points: list of target ideas (diagnosis, workup, management) sized per difficulty
-Output ONLY JSON as:
-{{
-  "title": "...",
-  "scenario": "...",
-  "key_points": ["...", "...", "..."]
-}}
-"""
+    template = (
+        "You are an ophthalmology simulation author.\n"
+        "Create ONE realistic case vignette (brief) for postgraduate level on: \"{topic}\"\n"
+        "Difficulty: {diff}. Design guidance: {guide}\n"
+        "Include:\n"
+        "- title\n"
+        "- scenario (2–5 sentences)\n"
+        "- key_points: list of target ideas (diagnosis, workup, management) sized per difficulty\n"
+        "Output ONLY JSON as:\n"
+        "{{\n"
+        "  \"title\": \"...\",\n"
+        "  \"scenario\": \"...\",\n"
+        "  \"key_points\": [\"...\", \"...\", \"...\"]\n"
+        "}}\n"
+    )
+    prompt = PromptTemplate(
+        input_variables=["topic", "diff", "guide"],
+        template=template,
     )
     chain = LLMChain(llm=llm, prompt=prompt)
     raw = chain.run(topic=topic or "general ophthalmology", diff=diff, guide=guide)
-    data = _parse_json_block(raw) or {}
+    data = _parse_json_block(raw) | {} if isinstance(_parse_json_block(raw), dict) else _parse_json_block(raw) or {}
     title = data.get("title", "Ophthalmology Case")
     scenario = data.get("scenario", "A patient presents to clinic...")
     key_points = data.get("key_points", [])
@@ -708,25 +714,27 @@ Output ONLY JSON as:
 
 def evaluate_case_response(scenario: str, key_points, user_answer: str):
     rubric = "; ".join(key_points[:8])
-    prompt = PromptTemplate.from_template(
-        """You are grading a short free-text response for an ophthalmology case.
-Case: {scenario}
-Rubric key points (target ideas): {rubric}
-Learner response: {answer}
-
-Return ONLY JSON as:
-{
-  "feedback": {
-    "strengths": ["...", "..."],
-    "missed": ["...", "..."],
-    "suggestions": "one concise paragraph with practical advice"
-  },
-  "score": {
-    "achieved": <int 0-100>,
-    "explanation": "one line on how the score was decided"
-  }
-}
-"""
+    template = (
+        "You are grading a short free-text response for an ophthalmology case.\n"
+        "Case: {scenario}\n"
+        "Rubric key points (target ideas): {rubric}\n"
+        "Learner response: {answer}\n\n"
+        "Return ONLY JSON as:\n"
+        "{{\n"
+        "  \"feedback\": {{\n"
+        "    \"strengths\": [\"...\", \"...\"],\n"
+        "    \"missed\": [\"...\", \"...\"],\n"
+        "    \"suggestions\": \"one concise paragraph with practical advice\"\n"
+        "  }},\n"
+        "  \"score\": {{\n"
+        "    \"achieved\": 0,\n"
+        "    \"explanation\": \"one line on how the score was decided\"\n"
+        "  }}\n"
+        "}}\n"
+    )
+    prompt = PromptTemplate(
+        input_variables=["scenario", "rubric", "answer"],
+        template=template,
     )
     chain = LLMChain(llm=llm, prompt=prompt)
     raw = chain.run(scenario=scenario, rubric=rubric, answer=user_answer)
@@ -863,27 +871,31 @@ def _escape_html(s: str) -> str:
     return s.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
 
 def generate_flashcards(topic: str, num_cards: int = 10):
-    prompt = PromptTemplate.from_template(
-        """You are an ophthalmology educator.
-Create {num} concise flashcards for quick revision on: "{topic}".
-Each card should have:
-- "front": a short prompt/question (max 18 words)
-- "back": a crisp, high-yield answer (1–3 bullet lines or a short paragraph)
-Output ONLY JSON:
-{
-  "cards": [
-    {"front":"...", "back":"..."},
-    ...
-  ]
-}
-Keep strictly to ophthalmology.
-"""
+    # Escape JSON braces with double {{ }} to avoid PromptTemplate parsing
+    template = (
+        "You are an ophthalmology educator.\n"
+        "Create {num} concise flashcards for quick revision on: \"{topic}\".\n"
+        "Each card should have:\n"
+        "- \"front\": a short prompt/question (max 18 words)\n"
+        "- \"back\": a crisp, high-yield answer (1–3 bullet lines or a short paragraph)\n"
+        "Output ONLY JSON:\n"
+        "{{\n"
+        "  \"cards\": [\n"
+        "    {{\"front\":\"...\", \"back\":\"...\"}},\n"
+        "    ...\n"
+        "  ]\n"
+        "}}\n"
+        "Keep strictly to ophthalmology."
+    )
+    prompt = PromptTemplate(
+        input_variables=["topic", "num"],
+        template=template,
     )
     chain = LLMChain(llm=llm, prompt=prompt)
-    raw = chain.run(topic=topic or "general ophthalmology", num=num_cards)
+    raw = chain.run(topic=topic or "general ophthalmology", num=int(num_cards))
     data = _parse_json_block(raw) or {"cards": []}
     cards = []
-    for c in data.get("cards", [])[:num_cards]:
+    for c in data.get("cards", [])[: int(num_cards)]:
         if isinstance(c, dict) and "front" in c and "back" in c:
             cards.append({"front": str(c["front"]).strip(), "back": str(c["back"]).strip(), "mark": None})
     return cards
@@ -1207,7 +1219,7 @@ with st.sidebar:
         st.caption(f"Active Document: **{st.session_state['active_doc_name']}**")
         if st.button("Clear Document & Revert to Default", key="clear_doc_sidebar", use_container_width=True):
             st.session_state.session_id = None; st.session_state.active_doc_name = None
-            st.experimental_rerun()
+            st.rerun()
 
 # --- Chat history (baseline/Teaching) ---------------------------------------
 if (st.session_state.mode in ["Teaching"]) or (st.session_state.mode is None):
