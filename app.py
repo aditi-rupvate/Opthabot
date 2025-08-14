@@ -570,8 +570,8 @@ def render_exam_ui():
 
     topic = st.text_input("Topic for MCQs (ophthalmology only)", placeholder="e.g., Primary open-angle glaucoma", key="mcq_topic")
 
-    # ---- Controls row (aligned with spacer) ----
-    c_num, c_diff, c_btn = st.columns([1, 1, 0.8], gap="small")
+    # ---- Controls row (aligned with label-height spacer) ----
+    c_num, c_diff, c_btn = st.columns([1, 1, 1], gap="small")
     with c_num:
         num_q = st.number_input("Number of MCQs", min_value=1, max_value=20, value=5, step=1, key="mcq_num")
     with c_diff:
@@ -583,7 +583,7 @@ def render_exam_ui():
             help="Adjust MCQ complexity"
         )
     with c_btn:
-        st.markdown("<div class='form-spacer'></div>", unsafe_allow_html=True)
+        st.markdown("<span class='form-label-spacer'></span>", unsafe_allow_html=True)
         if st.button("Generate MCQs", use_container_width=True, type="primary", key="mcq_generate"):
             with st.spinner("Generating MCQs…"):
                 mcqs = generate_mcqs(topic or "general ophthalmology", int(num_q), difficulty)
@@ -740,7 +740,9 @@ def render_case_ui():
     st.markdown("<div class='topbar-custom'>Case-Based Mode · Simulation</div>", unsafe_allow_html=True)
 
     topic = st.text_input("Case focus (ophthalmology only)", placeholder="e.g., Painless vision loss · CRAO vs. NAION")
-    c1, c2, _ = st.columns([1, 1, 1])
+
+    # two columns (difficulty + aligned button)
+    c1, c2 = st.columns([1, 1], gap="small")
     with c1:
         difficulty = st.selectbox(
             "Difficulty",
@@ -750,6 +752,7 @@ def render_case_ui():
             help="Adjust case complexity"
         )
     with c2:
+        st.markdown("<span class='form-label-spacer'></span>", unsafe_allow_html=True)
         if st.button("Generate Case", type="primary", use_container_width=True):
             with st.spinner("Generating case…"):
                 c = generate_case(topic or "general ophthalmology", difficulty)
@@ -955,11 +958,11 @@ def render_flash_ui():
     topic = st.text_input("Flashcards topic (ophthalmology only)", placeholder="e.g., Glaucoma medications")
 
     # aligned controls row
-    c_num, c_btn = st.columns([1, 0.8], gap="small")
+    c_num, c_btn = st.columns([1, 1], gap="small")
     with c_num:
         num_cards = st.number_input("Cards", min_value=3, max_value=40, value=10, step=1)
     with c_btn:
-        st.markdown("<div class='form-spacer'></div>", unsafe_allow_html=True)
+        st.markdown("<span class='form-label-spacer'></span>", unsafe_allow_html=True)
         if st.button("Generate Deck", type="primary", use_container_width=True, key="gen_flash"):
             with st.spinner("Building your deck…"):
                 deck = generate_flashcards(topic or "general ophthalmology", int(num_cards))
@@ -1092,7 +1095,7 @@ def render_flash_ui():
             )
 
 # --- Theme Palettes ---
-LIGHT = {"bg": "#f8fafb", "bar": "#fff", "bot": "#e9eef6", "user": "#d1e7dd", "text": "#191b22", "input": "#e8edf2", "border": "#d4dde7", "expander": "#f4f7fb"}
+LIGHT = {"bg": "#f8fafb", "bar": "#fff", "bot": "#e9eef6", "user": "#22577a", "text": "#191b22", "input": "#e8edf2", "border": "#d4dde7", "expander": "#f4f7fb"}
 DARK  = {"bg": "#202126", "bar": "#232733", "bot": "#232733", "user": "#22577a", "text": "#f3f5f8", "input": "#242730", "border": "#26282f", "expander": "#24272e"}
 
 # Session state
@@ -1132,7 +1135,17 @@ st.markdown(f"""
     .case-title {{ font-weight:800; margin-bottom:.4em; }}
     .case-body {{ opacity:.95; }}
     .case-instr {{ margin:.6em 0 .3em 0; font-weight:600; }}
-    .form-spacer {{ height: 2.2rem; }}  /* aligns buttons with input labels */
+
+    /* NEW: label-height spacer to align buttons with labeled widgets */
+    .form-label-spacer{{
+      display:block;
+      height:2.25rem;
+      margin-bottom:.35rem;
+    }}
+    @media (max-width: 900px){{
+      .form-label-spacer{{ height:2.0rem; }}
+    }}
+
     @media only screen and (max-width: 768px) {{ .topbar-custom {{ font-size: 1.1rem; padding: .9em; text-align: center; }} .msg-user, .msg-bot {{ font-size: 0.95rem; max-width: 95%; }} }}
 </style>
 """, unsafe_allow_html=True)
