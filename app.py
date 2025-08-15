@@ -1,4 +1,4 @@
- import os
+import os
 import re
 import uuid
 import time
@@ -22,7 +22,7 @@ from streamlit_mic_recorder import speech_to_text
 from gtts import gTTS
 from langchain.memory import ConversationBufferMemory
 
-# --- Streamlit page config (early) ---
+# --- Streamlit page config ---
 st.set_page_config(layout="centered")
 
 # --- 1. Configuration ---
@@ -38,21 +38,21 @@ disclaimer_text = "— Note: This output is for academic purposes only and must 
 
 # === Ophthalmology gate ======================================================
 OPHTH_KEYWORDS = [
-    "eye", "ocular", "ophthalmology", "ophthalmic", "vision", "visual acuity", "refraction",
-    "cornea", "conjunctiva", "sclera", "anterior chamber", "iris", "pupil", "lens",
-    "vitreous", "retina", "macula", "fovea", "optic nerve", "optic disc",
-    "cataract", "glaucoma", "amd", "age-related macular degeneration", "diabetic retinopathy",
-    "dr", "csr", "central serous", "uveitis", "keratoconus", "dry eye", "meibomian",
-    "blepharitis", "strabismus", "amblyopia", "endophthalmitis", "retinal detachment",
-    "rhegmatogenous", "retinitis pigmentosa", "toxoplasmosis", "cmv retinitis",
-    "slit lamp", "gonioscopy", "tonometry", "intraocular pressure", "iop",
-    "oct", "optical coherence tomography", "perimetry", "visual field",
-    "fundus", "ophthalmoscopy", "fluorescein angiography", "ultrasound b-scan",
-    "lasik", "prk", "iol", "intraocular lens", "phaco", "vitrectomy", "trabeculectomy",
-    "latanoprost", "timolol", "brimonidine", "dorzolamide", "pilocarpine",
-    "prednisolone", "moxifloxacin", "cyclopentolate", "tropicamide",
-    "red eye", "floaters", "flashes", "metamorphopsia", "diplopia", "photophobia",
-    "eye trauma", "chemical injury", "contact lens", "orthokeratology"
+    "eye","ocular","ophthalmology","ophthalmic","vision","visual acuity","refraction",
+    "cornea","conjunctiva","sclera","anterior chamber","iris","pupil","lens",
+    "vitreous","retina","macula","fovea","optic nerve","optic disc",
+    "cataract","glaucoma","amd","age-related macular degeneration","diabetic retinopathy",
+    "dr","csr","central serous","uveitis","keratoconus","dry eye","meibomian",
+    "blepharitis","strabismus","amblyopia","endophthalmitis","retinal detachment",
+    "rhegmatogenous","retinitis pigmentosa","toxoplasmosis","cmv retinitis",
+    "slit lamp","gonioscopy","tonometry","intraocular pressure","iop",
+    "oct","optical coherence tomography","perimetry","visual field",
+    "fundus","ophthalmoscopy","fluorescein angiography","ultrasound b-scan",
+    "lasik","prk","iol","intraocular lens","phaco","vitrectomy","trabeculectomy",
+    "latanoprost","timolol","brimonidine","dorzolamide","pilocarpine",
+    "prednisolone","moxifloxacin","cyclopentolate","tropicamide",
+    "red eye","floaters","flashes","metamorphopsia","diplopia","photophobia",
+    "eye trauma","chemical injury","contact lens","orthokeratology"
 ]
 GREETING_PATTERNS = [
     r"^\s*(hi|hello|hey|yo)\b",
@@ -76,7 +76,7 @@ DOMAIN_REFUSAL = (
 embeddings = GoogleGenerativeAIEmbeddings(model="models/embedding-001", google_api_key=GOOGLE_API_KEY)
 llm = ChatGoogleGenerativeAI(model="gemini-1.5-flash-latest", temperature=0.3, google_api_key=GOOGLE_API_KEY)
 
-# ---------------- DYNAMIC FOLLOW-UP (warmer, human tone) --------------------
+# ---------------- DYNAMIC FOLLOW-UP ----------------------
 def generate_teaching_followup(user_q: str, explanation: str) -> str:
     tmpl = PromptTemplate.from_template(
         """You are an empathetic ophthalmology tutor with a warm, human style.
@@ -99,7 +99,7 @@ Your explanation: {explanation}
 Return only the single follow-up line:"""
     )
     chain = LLMChain(llm=llm, prompt=tmpl)
-    out = chain.run(user_q=user_q, explanation=explanation).strip()
+    out = chain.invoke({"user_q": user_q, "explanation": explanation})["text"].strip()
     line = re.sub(r"`+", "", out).split("\n")[0]
     line = re.sub(r"\s+", " ", line).strip()
     return line[:200]
@@ -158,7 +158,7 @@ def render_audio_player_b64(audio_b64: str):
     """
     st.markdown(audio_html, unsafe_allow_html=True)
 
-# ---- Unicode-safe PDF creators for Exam, Case, Flashcards ----
+# ---- Unicode-safe PDF creators ----
 def create_exam_pdf(rows, meta) -> str:
     pdf = FPDF()
     pdf.set_auto_page_break(auto=True, margin=15)
@@ -284,7 +284,7 @@ def create_flash_pdf(cards, meta) -> str:
     filepath = os.path.join(CHEATSHEET_PATH, filename)
     pdf.output(filepath); return filepath
 
-# --- PDF Generation Class (cheatsheet; unchanged) ---------------------------
+# --- PDF for cheatsheet content ---------------------------------------------
 class PDF(FPDF):
     def __init__(self, topic, *args, **kwargs):
         super().__init__(*args, **kwargs)
@@ -358,14 +358,14 @@ def handle_query_logic(query: str, session_id: str = None):
             "Provide a comprehensive explanation or summary for {topic}.\n\nContext: {context}\nResponse:"
         )
         chain = LLMChain(llm=llm, prompt=prompt_template)
-        return chain.run(topic=topic, context=context)
+        return chain.invoke({"topic": topic, "context": context})["text"]
     def cheatsheet_generator_func(topic: str) -> str:
         context = "\n\n".join([doc.page_content for doc in retriever.get_relevant_documents(topic)])
         prompt_template = PromptTemplate.from_template(
             "Create a detailed cheat sheet for {topic} using '##' for headings and '-' for list items.\nContext: {context}\nCheat Sheet:"
         )
         chain = LLMChain(llm=llm, prompt=prompt_template)
-        cheatsheet_text = chain.run(topic=topic, context=context)
+        cheatsheet_text = chain.invoke({"topic": topic, "context": context})["text"]
         pdf_filename = create_formatted_pdf(cheatsheet_text, topic)
         return f"PDF_GENERATED::{pdf_filename}::{cheatsheet_text}"
 
@@ -429,8 +429,7 @@ def handle_query_logic(query: str, session_id: str = None):
 
     return final_answer, pdf_filename
 
-# ============================= EXAM MODE =====================================
-
+# ============================= Helpers =======================================
 def _parse_json_block(text: str):
     try:
         return json.loads(text)
@@ -444,29 +443,54 @@ def _parse_json_block(text: str):
             return None
     return None
 
-def generate_mcqs(topic: str, num_q: int = 5):
-    prompt = PromptTemplate.from_template(
-        """You are an ophthalmology exam item writer.
-Create {num} high-quality single-best-answer MCQs on: "{topic}"
-Constraints:
-- Postgraduate level, strictly ophthalmology.
-- 4 options (A–D). Exactly one correct.
-- Provide a 1–2 line explanation.
-- Output ONLY JSON as:
-{{
-  "mcqs": [
-    {{
-      "question": "...",
-      "options": ["...", "...", "...", "..."],
-      "correct_index": 0,
-      "explanation": "..."
-    }}
-  ]
-}}
-"""
+# ============================= DIFFICULTY MAPS ===============================
+DIFF_LEVELS = ["easy", "medium", "difficult", "extra difficult", "extremely difficult"]
+DIFF_GUIDE_MCQ = {
+    "easy": "single-step recall; common definitions; straightforward clinical facts; avoid tricks.",
+    "medium": "apply knowledge to common scenarios; simple differentials; mild distractors; one small trap allowed.",
+    "difficult": "multi-step reasoning; nuanced differentials/management; plausible distractors; include common pitfalls.",
+    "extra difficult": "complex, atypical presentations; guidelines nuance; multi-order reasoning; subtle traps.",
+    "extremely difficult": "expert level; rare but tested nuances; closely competing options; require synthesis across topics."
+}
+DIFF_GUIDE_CASE = {
+    "easy": "short, classic presentation; clear diagnosis path; 4–5 key points.",
+    "medium": "common but slightly tricky differential; 5–6 key points.",
+    "difficult": "atypical features; broader differential; management nuance; 6–7 key points.",
+    "extra difficult": "multisystem clues; ambiguous data; prioritization conflicts; 7–8 key points.",
+    "extremely difficult": "edge-case exam scenario; rare pitfalls; heavy weighting on justification; 8 key points."
+}
+
+# ============================= EXAM: MCQ ONLY ================================
+def generate_mcqs(topic: str, num_q: int = 5, difficulty: str = "medium"):
+    diff = difficulty if difficulty in DIFF_LEVELS else "medium"
+    guide = DIFF_GUIDE_MCQ[diff]
+    template = (
+        "You are an ophthalmology exam item writer.\n"
+        "Create {num} high-quality single-best-answer MCQs on: \"{topic}\"\n"
+        "Difficulty: {diff}. Design guidance: {guide}\n"
+        "Constraints:\n"
+        "- Postgraduate level, strictly ophthalmology.\n"
+        "- 4 options (A–D). Exactly one correct.\n"
+        "- Provide a 1–2 line explanation focused on the decision point.\n"
+        "- Avoid images. Use concise wording.\n"
+        "Output ONLY JSON as:\n"
+        "{{\n"
+        "  \"mcqs\": [\n"
+        "    {{\n"
+        "      \"question\": \"...\",\n"
+        "      \"options\": [\"...\", \"...\", \"...\", \"...\"],\n"
+        "      \"correct_index\": 0,\n"
+        "      \"explanation\": \"...\"\n"
+        "    }}\n"
+        "  ]\n"
+        "}}\n"
+    )
+    prompt = PromptTemplate(
+        input_variables=["topic", "num", "diff", "guide"],
+        template=template,
     )
     chain = LLMChain(llm=llm, prompt=prompt)
-    raw = chain.run(topic=topic, num=num_q)
+    raw = chain.invoke({"topic": topic or "general ophthalmology", "num": num_q, "diff": diff, "guide": guide})["text"]
     data = _parse_json_block(raw) or {"mcqs": []}
     mcqs = data.get("mcqs", [])
     clean = []
@@ -518,16 +542,9 @@ def render_exam_ui():
       .exam-scope .card-title {{ font-weight:700; margin-bottom:.6em; }}
       .exam-scope .stButton>button {{
         width:100% !important;
-        text-align:left;
-        display:flex; align-items:center; gap:.6em; justify-content:flex-start;
-        padding:.90em 1.1em;
-        border-radius:14px; border:1px solid {THEME['border']};
-        background:{THEME['bg']};
-        box-shadow:0 1px 6px rgba(0,0,0,.08);
-        min-height:64px;
-        line-height:1.2; white-space:normal; word-break:break-word;
+        text-align:center;
+        padding:.90em 1.1em; border-radius:14px; border:1px solid {THEME['border']};
       }}
-      .exam-scope .stButton>button:hover {{ transform: translateY(-1px); }}
       .exam-scope .option {{
         margin:.35em 0; padding:.7em .85em; border:1px solid {THEME['border']};
         border-radius:12px; background:{THEME['bg']};
@@ -551,30 +568,44 @@ def render_exam_ui():
     st.markdown("<div class='topbar-custom'>Exam Mode · MCQ Practice</div>", unsafe_allow_html=True)
     st.markdown("<div class='exam-scope'>", unsafe_allow_html=True)
 
-    topic = st.text_input("Topic for MCQs (ophthalmology only)", placeholder="e.g., Primary open-angle glaucoma")
-    cols = st.columns([1, 1, 2])
-    with cols[0]:
-        num_q = st.number_input("Number of MCQs", min_value=1, max_value=20, value=5, step=1)
-    with cols[1]:
-        if st.button("Generate MCQs", use_container_width=True, type="primary"):
+    topic = st.text_input("Topic for MCQs (ophthalmology only)", placeholder="e.g., Primary open-angle glaucoma", key="mcq_topic")
+
+    # ---- Controls row (aligned) ----
+    c_num, c_diff, c_btn = st.columns([1, 1, 1], gap="small")
+    with c_num:
+        num_q = st.number_input("Number of MCQs", min_value=1, max_value=20, value=5, step=1, key="mcq_num")
+    with c_diff:
+        difficulty = st.selectbox(
+            "Difficulty",
+            options=DIFF_LEVELS,
+            index=1,
+            key="mcq_difficulty",
+            help="Adjust MCQ complexity"
+        )
+    with c_btn:
+        st.markdown("<div class='row-align'>", unsafe_allow_html=True)
+        if st.button("Generate MCQs", use_container_width=True, type="primary", key="mcq_generate"):
             with st.spinner("Generating MCQs…"):
-                mcqs = generate_mcqs(topic or "general ophthalmology", int(num_q))
+                mcqs = generate_mcqs(topic or "general ophthalmology", int(num_q), difficulty)
             st.session_state.exam = {
                 "topic": topic or "general ophthalmology",
                 "generated_at": datetime.utcnow().isoformat() + "Z",
                 "questions": mcqs,
-                "selected": {},   # q_idx -> opt_idx
-                "score": 0
+                "selected": {},
+                "score": 0,
+                "difficulty": difficulty
             }
             st.rerun()
+        st.markdown("</div>", unsafe_allow_html=True)
 
     exam_state = st.session_state.get("exam", None)
     if not exam_state or not exam_state.get("questions"):
-        st.info("Enter a topic and click **Generate MCQs** to start.")
+        st.info("Enter a topic, choose difficulty, and click **Generate MCQs** to start.")
         st.markdown("</div>", unsafe_allow_html=True)
         return
 
     render_exam_dashboard(exam_state)
+    st.caption(f"Difficulty: {exam_state.get('difficulty','medium').title()}")
     st.markdown("<br/>", unsafe_allow_html=True)
 
     for i, q in enumerate(exam_state["questions"]):
@@ -586,7 +617,7 @@ def render_exam_ui():
             for j, opt in enumerate(q["options"]):
                 with bcols[j % 2]:
                     st.markdown("<div class='gridgap'>", unsafe_allow_html=True)
-                    if st.button(f"{chr(65+j)}. {opt}", key=f"mcq_{i}_{j}"):
+                    if st.button(f"{chr(65+j)}. {opt}", key=f"mcq_{i}_{j}", use_container_width=True):
                         with st.spinner("Checking…"):
                             st.session_state.exam["selected"][i] = j
                         st.rerun()
@@ -642,56 +673,65 @@ def render_exam_ui():
                 mime="application/pdf", use_container_width=True
             )
 
-# ============================ CASE MODE (with extra spinners) =================
+    st.markdown("</div>", unsafe_allow_html=True)  # close .exam-scope
 
-def generate_case(topic: str):
-    prompt = PromptTemplate.from_template(
-        """You are an ophthalmology simulation author.
-Create ONE realistic case vignette (brief) for postgraduate level on: "{topic}"
-Include:
-- title
-- scenario (2–5 sentences)
-- key_points: list of 5–8 bullet keywords (diagnosis+workup+management targets)
-Output ONLY JSON as:
-{{
-  "title": "...",
-  "scenario": "...",
-  "key_points": ["...", "...", "..."]
-}}
-"""
+# ============================ CASE MODE ====================
+def generate_case(topic: str, difficulty: str = "medium"):
+    diff = difficulty if difficulty in DIFF_LEVELS else "medium"
+    guide = DIFF_GUIDE_CASE[diff]
+    template = (
+        "You are an ophthalmology simulation author.\n"
+        "Create ONE realistic case vignette (brief) for postgraduate level on: \"{topic}\"\n"
+        "Difficulty: {diff}. Design guidance: {guide}\n"
+        "Include:\n"
+        "- title\n"
+        "- scenario (2–5 sentences)\n"
+        "- key_points: list of target ideas (diagnosis, workup, management) sized per difficulty\n"
+        "Output ONLY JSON as:\n"
+        "{{\n"
+        "  \"title\": \"...\",\n"
+        "  \"scenario\": \"...\",\n"
+        "  \"key_points\": [\"...\", \"...\", \"...\"]\n"
+        "}}\n"
+    )
+    prompt = PromptTemplate(
+        input_variables=["topic", "diff", "guide"],
+        template=template,
     )
     chain = LLMChain(llm=llm, prompt=prompt)
-    raw = chain.run(topic=topic or "general ophthalmology")
+    raw = chain.invoke({"topic": topic or "general ophthalmology", "diff": diff, "guide": guide})["text"]
     data = _parse_json_block(raw) or {}
     title = data.get("title", "Ophthalmology Case")
     scenario = data.get("scenario", "A patient presents to clinic...")
     key_points = data.get("key_points", [])
-    return {"title": title, "scenario": scenario, "key_points": key_points}
+    return {"title": title, "scenario": scenario, "key_points": key_points, "difficulty": diff}
 
 def evaluate_case_response(scenario: str, key_points, user_answer: str):
     rubric = "; ".join(key_points[:8])
-    prompt = PromptTemplate.from_template(
-        """You are grading a short free-text response for an ophthalmology case.
-Case: {scenario}
-Rubric key points (target ideas): {rubric}
-Learner response: {answer}
-
-Return ONLY JSON as:
-{{
-  "feedback": {{
-    "strengths": ["...", "..."],
-    "missed": ["...", "..."],
-    "suggestions": "one concise paragraph with practical advice"
-  }},
-  "score": {{
-    "achieved": <int 0-100>,
-    "explanation": "one line on how the score was decided"
-  }}
-}}
-"""
+    template = (
+        "You are grading a short free-text response for an ophthalmology case.\n"
+        "Case: {scenario}\n"
+        "Rubric key points (target ideas): {rubric}\n"
+        "Learner response: {answer}\n\n"
+        "Return ONLY JSON as:\n"
+        "{{\n"
+        "  \"feedback\": {{\n"
+        "    \"strengths\": [\"...\", \"...\"],\n"
+        "    \"missed\": [\"...\", \"...\"],\n"
+        "    \"suggestions\": \"one concise paragraph with practical advice\"\n"
+        "  }},\n"
+        "  \"score\": {{\n"
+        "    \"achieved\": 0,\n"
+        "    \"explanation\": \"one line on how the score was decided\"\n"
+        "  }}\n"
+        "}}\n"
+    )
+    prompt = PromptTemplate(
+        input_variables=["scenario", "rubric", "answer"],
+        template=template,
     )
     chain = LLMChain(llm=llm, prompt=prompt)
-    raw = chain.run(scenario=scenario, rubric=rubric, answer=user_answer)
+    raw = chain.invoke({"scenario": scenario, "rubric": rubric, "answer": user_answer})["text"]
     data = _parse_json_block(raw) or {}
     fb = data.get("feedback", {})
     sc = data.get("score", {"achieved": 0, "explanation": ""})
@@ -701,11 +741,21 @@ def render_case_ui():
     st.markdown("<div class='topbar-custom'>Case-Based Mode · Simulation</div>", unsafe_allow_html=True)
 
     topic = st.text_input("Case focus (ophthalmology only)", placeholder="e.g., Painless vision loss · CRAO vs. NAION")
-    c1, c2 = st.columns([1, 1])
+
+    c1, c2 = st.columns([1, 1], gap="small")
     with c1:
+        difficulty = st.selectbox(
+            "Difficulty",
+            options=DIFF_LEVELS,
+            index=1,
+            key="case_difficulty",
+            help="Adjust case complexity"
+        )
+    with c2:
+        st.markdown("<div class='row-align'>", unsafe_allow_html=True)
         if st.button("Generate Case", type="primary", use_container_width=True):
             with st.spinner("Generating case…"):
-                c = generate_case(topic or "general ophthalmology")
+                c = generate_case(topic or "general ophthalmology", difficulty)
             st.session_state.case = {
                 "topic": topic or "general ophthalmology",
                 "case": c,
@@ -714,15 +764,17 @@ def render_case_ui():
                 "generated_at": datetime.utcnow().isoformat() + "Z"
             }
             st.rerun()
+        st.markdown("</div>", unsafe_allow_html=True)
 
     case_state = st.session_state.get("case", None)
     if not case_state:
         with st.spinner("Loading case mode…"):
             time.sleep(0.3)
-        st.info("Enter a focus and click **Generate Case** to start.")
+        st.info("Enter a focus, choose difficulty, and click **Generate Case** to start.")
         return
 
     c = case_state["case"]
+    st.caption(f"Difficulty: {c.get('difficulty','medium').title()}")
     st.markdown(
         f"""
         <div class='case-card'>
@@ -810,30 +862,32 @@ def render_case_ui():
                 mime="application/pdf", use_container_width=True
             )
 
-# ============================= FLASHCARDS MODE (flip + swipe) ================
+# ============================= FLASHCARDS MODE ===============================
+def _escape_html(s: str) -> str:
+    return s.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
 
 def generate_flashcards(topic: str, num_cards: int = 10):
-    prompt = PromptTemplate.from_template(
-        """You are an ophthalmology educator.
-Create {num} concise flashcards for quick revision on: "{topic}".
-Each card should have:
-- "front": a short prompt/question (max 18 words)
-- "back": a crisp, high-yield answer (1–3 bullet lines or a short paragraph)
-Output ONLY JSON:
-{{
-  "cards": [
-    {{"front":"...", "back":"..."}},
-    ...
-  ]
-}}
-Keep strictly to ophthalmology.
-"""
+    template = (
+        "You are an ophthalmology educator.\n"
+        "Create {num} concise flashcards for quick revision on: \"{topic}\".\n"
+        "Each card should have:\n"
+        "- \"front\": a short prompt/question (max 18 words)\n"
+        "- \"back\": a crisp, high-yield answer (1–3 bullet lines or a short paragraph)\n"
+        "Output ONLY JSON:\n"
+        "{{\n"
+        "  \"cards\": [\n"
+        "    {{\"front\":\"...\", \"back\":\"...\"}},\n"
+        "    ...\n"
+        "  ]\n"
+        "}}\n"
+        "Keep strictly to ophthalmology."
     )
+    prompt = PromptTemplate(input_variables=["topic", "num"], template=template)
     chain = LLMChain(llm=llm, prompt=prompt)
-    raw = chain.run(topic=topic or "general ophthalmology", num=num_cards)
+    raw = chain.invoke({"topic": topic or "general ophthalmology", "num": int(num_cards)})["text"]
     data = _parse_json_block(raw) or {"cards": []}
     cards = []
-    for c in data.get("cards", [])[:num_cards]:
+    for c in data.get("cards", [])[: int(num_cards)]:
         if isinstance(c, dict) and "front" in c and "back" in c:
             cards.append({"front": str(c["front"]).strip(), "back": str(c["back"]).strip(), "mark": None})
     return cards
@@ -851,13 +905,10 @@ def render_flash_dashboard(fs):
     c4.metric("Incorrect", incorrect)
     c5.metric("Remaining", remaining)
 
-def _escape_html(s: str) -> str:
-    return s.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
-
 def render_flash_ui():
     st.markdown("<div class='topbar-custom'>Flashcards Mode · Rapid Recall</div>", unsafe_allow_html=True)
 
-    # Flip card styles + swipe script (scoped to #flash-scope)
+    # Flip card styles + aligned controls (no checkbox; class-based flip)
     st.markdown(f"""
     <style>
       #flash-scope .flip-wrap {{
@@ -866,97 +917,52 @@ def render_flash_ui():
         margin: 0 auto 0.75rem auto;
       }}
       #flash-scope .flip-card {{
-        display: block;
-        width: 100%;
-        height: 320px;
-        border-radius: 18px;
+        display: block; width: 100%; height: 320px; border-radius: 18px;
         border: 1px solid {THEME['border']};
         background: linear-gradient(135deg, #1a2233 0%, #2a3550 100%);
-        box-shadow: 0 10px 28px rgba(0,0,0,.25);
-        position: relative;
-        cursor: pointer;
-        outline: none;
+        box-shadow: 0 10px 28px rgba(0,0,0,.25); position: relative;
+        cursor: pointer; outline: none;
       }}
       #flash-scope .flip-card-inner {{
-        position: relative;
-        width: 100%;
-        height: 100%;
+        position: relative; width: 100%; height: 100%;
         transform-style: preserve-3d;
         transition: transform .55s cubic-bezier(.2,.7,.2,1);
       }}
-      #flash-scope input[type="checkbox"] {{ display:none; }}
-      #flash-scope input[type="checkbox"]:checked + label .flip-card-inner {{
-        transform: rotateY(180deg);
-      }}
+      #flash-scope .flip-card.flipped .flip-card-inner {{ transform: rotateY(180deg); }}
+
       #flash-scope .side {{
-        position: absolute; inset: 0;
-        backface-visibility: hidden;
-        border-radius: 18px;
+        position: absolute; inset: 0; backface-visibility: hidden; border-radius: 18px;
         display: flex; flex-direction: column; justify-content: center; align-items: center;
-        padding: 1.2rem;
-        color: #f6f7fb;
+        padding: 1.2rem; color: #f6f7fb;
       }}
-      #flash-scope .front {{ }}
       #flash-scope .back {{ transform: rotateY(180deg); background: linear-gradient(135deg, #26375b 0%, #1e2a45 100%); }}
-      #flash-scope .front .hint, #flash-scope .back .hint {{
-        position: absolute; bottom: 12px; opacity: .85; font-size: .95rem;
+      #flash-scope .front .hint, #flash-scope .back .hint {{ position: absolute; bottom: 12px; opacity: .85; font-size: .95rem; }}
+      #flash-scope .front .hint::before {{ content: "Tap to reveal"; }}
+      #flash-scope .back .hint::before {{ content: "Swipe up for next"; }}
+      #flash-scope .front .q, #flash-scope .back .a {{ max-width: 92%; text-align: center; font-size: 1.15rem; line-height: 1.35; white-space: pre-wrap; word-break: break-word; }}
+
+      /* Button row uses a grid so all three align perfectly */
+      #flash-controls {{
+        width: min(720px, 95%);
+        margin: .5rem auto 0 auto;
+        display: grid;
+        grid-template-columns: repeat(3, 1fr);
+        gap: 12px;
       }}
-      #flash-scope .front .hint::before {{
-        content: "Tap to reveal";
-      }}
-      #flash-scope .back .hint::before {{
-        content: "Swipe up for next";
-      }}
-      #flash-scope .front .q, #flash-scope .back .a {{
-        max-width: 92%;
-        text-align: center;
-        font-size: 1.15rem;
-        line-height: 1.35;
-        white-space: pre-wrap; word-break: break-word;
-      }}
-      #flash-scope .controls {{
-        width:min(720px,95%); margin:.5rem auto 0 auto;
-        display:flex; gap:.5rem;
-      }}
-      #flash-scope .controls .stButton>button {{
+      #flash-controls .stButton>button {{
+        height: 56px; display: flex; align-items: center; justify-content: center;
         border-radius: 12px;
       }}
     </style>
-    <script>
-      (function(){{
-        // Basic swipe-up detection inside flash-scope that clicks the "Next card" Streamlit button
-        let startY = null;
-        const scope = document.getElementById('flash-scope');
-        if(!scope) return;
-        scope.addEventListener('touchstart', function(e) {{
-          if(!e.changedTouches || !e.changedTouches.length) return;
-          startY = e.changedTouches[0].clientY;
-        }}, {{passive:true}});
-        scope.addEventListener('touchend', function(e) {{
-          if(startY === null) return;
-          const endY = e.changedTouches[0].clientY;
-          if(startY - endY > 50) {{
-            const btns = Array.from(document.querySelectorAll('button')).filter(b => b.innerText.trim() === 'Next card');
-            if(btns.length) btns[0].click();
-          }}
-          startY = null;
-        }}, {{passive:true}});
-        // Also allow Space / ArrowUp to advance
-        scope.addEventListener('keyup', function(e){{
-          if(e.key === ' ' || e.key === 'ArrowUp') {{
-            const btns = Array.from(document.querySelectorAll('button')).filter(b => b.innerText.trim() === 'Next card');
-            if(btns.length) btns[0].click();
-          }}
-        }});
-      }})();
-    </script>
     """, unsafe_allow_html=True)
 
     topic = st.text_input("Flashcards topic (ophthalmology only)", placeholder="e.g., Glaucoma medications")
-    colX, colY = st.columns([1,1])
-    with colX:
+
+    c_num, c_btn = st.columns([1, 1], gap="small")
+    with c_num:
         num_cards = st.number_input("Cards", min_value=3, max_value=40, value=10, step=1)
-    with colY:
+    with c_btn:
+        st.markdown("<div class='row-align'>", unsafe_allow_html=True)
         if st.button("Generate Deck", type="primary", use_container_width=True, key="gen_flash"):
             with st.spinner("Building your deck…"):
                 deck = generate_flashcards(topic or "general ophthalmology", int(num_cards))
@@ -967,6 +973,7 @@ def render_flash_ui():
                 "idx": 0
             }
             st.rerun()
+        st.markdown("</div>", unsafe_allow_html=True)
 
     fs = st.session_state.get("flash", None)
     if not fs or not fs.get("cards"):
@@ -980,19 +987,22 @@ def render_flash_ui():
     if idx >= total: idx = total - 1
     st.session_state.flash["idx"] = idx
 
+    # Dashboard
     render_flash_dashboard(fs)
     st.markdown("<br/>", unsafe_allow_html=True)
 
-    # Current card
+    # Current card (always start front; flip by toggling class)
     card = fs["cards"][idx]
     front = _escape_html(card["front"])
-    back = _escape_html(card["back"])
+    back  = _escape_html(card["back"])
+
+    card_id = f"fc_{idx}_{uuid.uuid4().hex[:6]}"
+    next_host_id = f"next_host_{idx}"
 
     st.markdown(f"""
     <div id="flash-scope" tabindex="0">
       <div class="flip-wrap">
-        <input id="flipcheck" type="checkbox" />
-        <label class="flip-card" for="flipcheck" aria-label="Flashcard (tap to flip)">
+        <div id="{card_id}" class="flip-card" role="button" aria-label="Flashcard (tap to flip)" tabindex="0">
           <div class="flip-card-inner">
             <div class="side front">
               <div class="q">{front}</div>
@@ -1003,13 +1013,74 @@ def render_flash_ui():
               <div class="hint"></div>
             </div>
           </div>
-        </label>
+        </div>
       </div>
     </div>
+
+    <script>
+    (function(){{
+      const card = document.getElementById("{card_id}");
+      const nextHost = document.getElementById("{next_host_id}");
+      const scope = document.getElementById("flash-scope");
+      if (!card) return;
+
+      // Always start front-side up (twice to avoid race with transitions)
+      card.classList.remove("flipped");
+      requestAnimationFrame(() => card.classList.remove("flipped"));
+
+      const goNext = () => {{
+        const btn = nextHost && nextHost.querySelector("button");
+        if (btn) btn.click();
+      }};
+      const toggleFlip = () => card.classList.toggle("flipped");
+
+      // Click flips
+      card.addEventListener("click", toggleFlip, {{ passive: true }});
+
+      // Keyboard: Space toggles; Enter/ArrowRight go NEXT if back visible; Esc returns to front
+      card.addEventListener("keydown", (e) => {{
+        const k = e.key || e.code;
+        if (k === " " || k === "Space" || k === "Spacebar") {{
+          e.preventDefault();
+          toggleFlip();
+        }} else if ((k === "Enter" || k === "ArrowRight") && card.classList.contains("flipped")) {{
+          e.preventDefault();
+          goNext();
+        }} else if (k === "Escape") {{
+          e.preventDefault();
+          card.classList.remove("flipped");
+        }}
+      }});
+
+      // Swipe up to NEXT (only when flipped, mostly-vertical, quick gesture)
+      let startY = null, startX = null, startT = 0;
+      if (scope) {{
+        scope.addEventListener("touchstart", (e) => {{
+          if (!e.changedTouches || !e.changedTouches.length) return;
+          const t = e.changedTouches[0];
+          startY = t.clientY; startX = t.clientX; startT = Date.now();
+        }}, {{ passive: true }});
+
+        scope.addEventListener("touchend", (e) => {{
+          if (startY === null) return;
+          const t = e.changedTouches[0];
+          const dy = startY - t.clientY;
+          const dx = Math.abs(startX - t.clientX);
+          const dt = Date.now() - startT;
+          if (card.classList.contains("flipped") && dy > 40 && dx < 60 && dt < 800) {{
+            goNext();
+          }}
+          startY = null;
+        }}, {{ passive: true }});
+      }}
+    }})();
+    </script>
     """, unsafe_allow_html=True)
 
-    # Controls: mark + next
-    left, mid, right = st.columns([1,1,1])
+    # Controls row (aligned grid)
+    st.markdown("<div id='flash-controls'>", unsafe_allow_html=True)
+
+    left, mid, right = st.columns(3)
     with left:
         if st.button("👍 I got it", key=f"fc_right_{idx}", use_container_width=True):
             st.session_state.flash["cards"][idx]["mark"] = True
@@ -1023,12 +1094,15 @@ def render_flash_ui():
                 st.session_state.flash["idx"] = idx + 1
             st.rerun()
     with right:
+        st.markdown(f"<div id='{next_host_id}'>", unsafe_allow_html=True)
         if st.button("Next card", key=f"fc_next_{idx}", use_container_width=True):
             if idx < total - 1:
                 st.session_state.flash["idx"] = idx + 1
             st.rerun()
+        st.markdown("</div>", unsafe_allow_html=True)
 
-    # Progress again under the card
+    st.markdown("</div>", unsafe_allow_html=True)  # end controls
+
     st.markdown("<br/>", unsafe_allow_html=True)
     render_flash_dashboard(st.session_state.flash)
 
@@ -1069,8 +1143,8 @@ def render_flash_ui():
             )
 
 # --- Theme Palettes ---
-LIGHT = {"bg": "#f8fafb", "bar": "#fff", "bot": "#e9eef6", "user": "#d1e7dd", "text": "#191b22", "input": "#e8edf2", "border": "#d4dde7", "expander": "#f4f7fb"}
-DARK = {"bg": "#202126", "bar": "#232733", "bot": "#232733", "user": "#22577a", "text": "#f3f5f8", "input": "#242730", "border": "#26282f", "expander": "#24272e"}
+LIGHT = {"bg": "#f8fafb", "bar": "#fff", "bot": "#e9eef6", "user": "#22577a", "text": "#191b22", "input": "#e8edf2", "border": "#d4dde7", "expander": "#f4f7fb"}
+DARK  = {"bg": "#202126", "bar": "#232733", "bot": "#232733", "user": "#22577a", "text": "#f3f5f8", "input": "#242730", "border": "#26282f", "expander": "#24272e"}
 
 # Session state
 if "theme" not in st.session_state: st.session_state.theme = "dark"
@@ -1081,7 +1155,7 @@ if "voice_enabled" not in st.session_state: st.session_state.voice_enabled = Fal
 if "input_accent" not in st.session_state: st.session_state.input_accent = 'en-US'
 if "output_accent" not in st.session_state: st.session_state.output_accent = 'com'
 if "teaching_mode" not in st.session_state: st.session_state.teaching_mode = False
-if "mode" not in st.session_state: st.session_state.mode = "Chat"
+if "mode" not in st.session_state: st.session_state.mode = None  # baseline Chat if modes disabled
 
 THEME = DARK if st.session_state.theme == "dark" else LIGHT
 
@@ -1109,35 +1183,72 @@ st.markdown(f"""
     .case-title {{ font-weight:800; margin-bottom:.4em; }}
     .case-body {{ opacity:.95; }}
     .case-instr {{ margin:.6em 0 .3em 0; font-weight:600; }}
+
+    /* Align primary buttons next to labeled widgets */
+    .row-align .stButton>button {{ margin-top: 2.15rem !important; }}
+    @media (max-width: 900px) {{
+      .row-align .stButton>button {{ margin-top: .25rem !important; }}
+    }}
+
     @media only screen and (max-width: 768px) {{ .topbar-custom {{ font-size: 1.1rem; padding: .9em; text-align: center; }} .msg-user, .msg-bot {{ font-size: 0.95rem; max-width: 95%; }} }}
 </style>
 """, unsafe_allow_html=True)
 
 st.markdown("<div class='topbar-custom'>Ophtha Bot : AI Chatbot for Postgrad Ophthalmology Students</div>", unsafe_allow_html=True)
 
-# --- Sidebar -----------------------------------------------------------------
+# --- SIDEBAR (Upload → Modes → Voice Chat → Settings) -----------------------
 with st.sidebar:
-    st.header("Settings")
-    is_dark_on = st.session_state.theme == "dark"
-    toggled = st.toggle("Dark Mode", value=is_dark_on, key="theme_toggle", help="Switch themes")
-    if toggled != is_dark_on:
-        st.session_state.theme = "dark" if toggled else "light"; st.rerun()
+    st.header("Upload a PDF")
+    uploaded_file = st.file_uploader("Upload a PDF", type="pdf", key="pdf_uploader")
+    if uploaded_file and st.button("Process Document", key="process_pdf", use_container_width=True):
+        with st.spinner("Processing document..."):
+            session_id = str(uuid.uuid4())
+            temp_dir = os.path.join(TEMP_STORAGE_PATH, session_id); os.makedirs(temp_dir, exist_ok=True)
+            file_path = os.path.join(temp_dir, uploaded_file.name)
+            with open(file_path, "wb") as buffer: buffer.write(uploaded_file.getbuffer())
+            doc = fitz.open(file_path)
+            texts = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=100).split_text(
+                "".join(page.get_text() for page in doc)
+            )
+            doc.close()
+            FAISS.from_texts(texts, embeddings).save_local(temp_dir)
+            st.session_state.session_id = session_id; st.session_state.active_doc_name = uploaded_file.name
+            st.success(f"Ready for questions about **{uploaded_file.name}**.")
+            time.sleep(0.4)
+            st.rerun()
+
+    if st.session_state.active_doc_name:
+        st.caption(f"Active Document: **{st.session_state['active_doc_name']}**")
+        if st.button("Clear Document & Revert to Default", key="clear_doc_sidebar", use_container_width=True):
+            st.session_state.session_id = None; st.session_state.active_doc_name = None
+            st.rerun()
+
+    st.divider()
 
     st.header("Modes")
-    st.session_state.mode = st.radio(
-        "Choose mode",
-        options=["Chat", "Teaching", "Exam", "Case", "Flashcards"],
-        index=["Chat", "Teaching", "Exam", "Case", "Flashcards"].index(st.session_state.mode) if st.session_state.mode in ["Chat","Teaching","Exam","Case","Flashcards"] else 0,
-        help="Switch between chat, tutor-style, MCQ practice, case simulations, or flashcards.",
-        key="mode_radio"
+    allowed_modes = ["Teaching", "Exam", "Case", "Flashcards"]
+    enable_modes = st.toggle(
+        "Enable study modes",
+        value=st.session_state.mode in allowed_modes,
+        help="Turn on to select Teaching, Exam, Case, or Flashcards."
     )
+    if enable_modes:
+        st.session_state.mode = st.radio(
+            "Choose mode",
+            options=allowed_modes,
+            index=allowed_modes.index(st.session_state.mode) if st.session_state.mode in allowed_modes else 0,
+            help="Switch between tutor-style, MCQ exam practice, case simulations, or flashcards.",
+            key="mode_radio"
+        )
+    else:
+        st.session_state.mode = None  # baseline Chat behavior
 
     st.divider()
     st.session_state.teaching_mode = (st.session_state.mode == "Teaching")
 
-    st.header("Voice Settings")
+    st.header("Voice Chat")
     st.session_state.voice_enabled = st.toggle("Enable Voice Chat", value=st.session_state.voice_enabled, help="Enable voice input and spoken responses.")
-    if st.session_state.voice_enabled and st.session_state.mode in ["Chat", "Teaching"]:
+    if st.session_state.voice_enabled and (st.session_state.mode in ["Teaching"] or st.session_state.mode is None):
         input_accent_options = {
             'American (US)': 'en-US', 'British (UK)': 'en-GB', 'Indian': 'en-IN',
             'Australian': 'en-AU', 'Canadian': 'en-CA', 'South African': 'en-ZA'
@@ -1154,8 +1265,15 @@ with st.sidebar:
             index=list(output_accent_options.values()).index(st.session_state.output_accent)
         )]
 
-# --- Chat history (Chat/Teaching) -------------------------------------------
-if st.session_state.mode in ["Chat", "Teaching"]:
+    st.divider()
+    st.header("Settings")
+    is_dark_on = st.session_state.theme == "dark"
+    toggled = st.toggle("Dark Mode", value=is_dark_on, key="theme_toggle", help="Switch themes")
+    if toggled != is_dark_on:
+        st.session_state.theme = "dark" if toggled else "light"; st.rerun()
+
+# --- Chat history (baseline/Teaching display) -------------------------------
+if (st.session_state.mode in ["Teaching"]) or (st.session_state.mode is None):
     for entry in st.session_state.chat_history:
         if "user" in entry:
             st.markdown(f"<div class='msg-user'>{entry['user']}</div>", unsafe_allow_html=True)
@@ -1166,30 +1284,6 @@ if st.session_state.mode in ["Chat", "Teaching"]:
                 if os.path.exists(pdf_path):
                     with open(pdf_path, "rb") as pdf_file:
                         st.download_button("📥 Download Cheatsheet", pdf_file.read(), entry["pdf_filename"], "application/pdf", key=f"dl_{entry['pdf_filename']}_{uuid.uuid4()}")
-
-# --- Upload Document ---------------------------------------------------------
-with st.expander("Upload a Custom Document"):
-    uploaded_file = st.file_uploader("Upload a PDF", type="pdf")
-    if uploaded_file and st.button("Process Document"):
-        with st.spinner("Processing document..."):
-            session_id = str(uuid.uuid4())
-            temp_dir = os.path.join(TEMP_STORAGE_PATH, session_id); os.makedirs(temp_dir, exist_ok=True)
-            file_path = os.path.join(temp_dir, uploaded_file.name)
-            with open(file_path, "wb") as buffer: buffer.write(uploaded_file.getbuffer())
-            doc = fitz.open(file_path)
-            texts = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=100).split_text("".join(page.get_text() for page in doc))
-            doc.close()
-            FAISS.from_texts(texts, embeddings).save_local(temp_dir)
-            st.session_state.session_id = session_id; st.session_state.active_doc_name = uploaded_file.name
-            st.session_state.chat_history.append({"bot": f"Ready for questions about **{uploaded_file.name}**.<br><span class='note-text'>{disclaimer_text}</span>"})
-            st.rerun()
-
-if st.session_state.active_doc_name:
-    st.info(f"Active Document: **{st.session_state['active_doc_name']}**")
-    if st.button("Clear Document & Revert to Default"):
-        st.session_state.session_id = None; st.session_state.active_doc_name = None
-        st.session_state.chat_history.append({"bot": f"Reverted to default knowledge base.<br><span class='note-text'>{disclaimer_text}</span>"})
-        st.rerun()
 
 # --- Mode router -------------------------------------------------------------
 def render_exam_ui_proxy():
@@ -1203,7 +1297,7 @@ elif st.session_state.mode == "Flashcards":
     render_flash_ui()
 else:
     user_prompt = None
-    if st.session_state.voice_enabled:
+    if st.session_state.voice_enabled and (st.session_state.mode in ["Teaching"] or st.session_state.mode is None):
         user_prompt = speech_to_text(language=st.session_state.input_accent, use_container_width=True, just_once=True, key='STT')
     else:
         user_prompt = st.chat_input("Type your question here...")
@@ -1216,13 +1310,13 @@ else:
             clean_text = re.sub(r'<.*?>', '', answer); raw_answer_text = clean_text.replace('`', '').replace('*', '')
             full_answer_html = f"{answer}<br><span class='note-text'>{disclaimer_text}</span>"
             st.markdown(f"<div class='msg-bot'>{full_answer_html}</div>", unsafe_allow_html=True)
-            if st.session_state.voice_enabled:
+            if st.session_state.voice_enabled and (st.session_state.mode in ["Teaching"] or st.session_state.mode is None):
                 spoken_text = raw_answer_text + " Anything you'd like to explore next?"
                 audio_b64 = text_to_audio_b64(spoken_text, st.session_state.output_accent)
                 if audio_b64: render_audio_player_b64(audio_b64)
             if pdf_filename:
                 pdf_path = os.path.join(CHEATSHEET_PATH, pdf_filename)
-                if os.path.exists(pdf_path,):
+                if os.path.exists(pdf_path):
                     with open(pdf_path, "rb") as pdf_file:
                         st.download_button("📥 Download Cheatsheet", pdf_file.read(), pdf_filename, "application/pdf", key=f"dl_{pdf_filename}_{uuid.uuid4()}")
             st.session_state.chat_history.append({"bot": full_answer_html, "pdf_filename": pdf_filename})
