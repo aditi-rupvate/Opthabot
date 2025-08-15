@@ -284,7 +284,7 @@ def create_flash_pdf(cards, meta) -> str:
     filepath = os.path.join(CHEATSHEET_PATH, filename)
     pdf.output(filepath); return filepath
 
-# --- PDF for cheatsheet content ---------------------------------------------
+# --- PDF Generation Class (cheatsheet) ---------------------------
 class PDF(FPDF):
     def __init__(self, topic, *args, **kwargs):
         super().__init__(*args, **kwargs)
@@ -570,7 +570,7 @@ def render_exam_ui():
 
     topic = st.text_input("Topic for MCQs (ophthalmology only)", placeholder="e.g., Primary open-angle glaucoma", key="mcq_topic")
 
-    # ---- Controls row (aligned) ----
+    # ---- Controls row (button aligned via CSS helper) ----
     c_num, c_diff, c_btn = st.columns([1, 1, 1], gap="small")
     with c_num:
         num_q = st.number_input("Number of MCQs", min_value=1, max_value=20, value=5, step=1, key="mcq_num")
@@ -591,7 +591,7 @@ def render_exam_ui():
                 "topic": topic or "general ophthalmology",
                 "generated_at": datetime.utcnow().isoformat() + "Z",
                 "questions": mcqs,
-                "selected": {},
+                "selected": {},   # q_idx -> opt_idx
                 "score": 0,
                 "difficulty": difficulty
             }
@@ -908,52 +908,52 @@ def render_flash_dashboard(fs):
 def render_flash_ui():
     st.markdown("<div class='topbar-custom'>Flashcards Mode · Rapid Recall</div>", unsafe_allow_html=True)
 
-    # Flip card styles + aligned controls (no checkbox; class-based flip)
+    # Flip card styles + swipe script (checkbox-based flip)
     st.markdown(f"""
     <style>
-      #flash-scope .flip-wrap {{
-        perspective: 1200px;
-        width: min(720px, 95%);
-        margin: 0 auto 0.75rem auto;
-      }}
-      #flash-scope .flip-card {{
-        display: block; width: 100%; height: 320px; border-radius: 18px;
-        border: 1px solid {THEME['border']};
-        background: linear-gradient(135deg, #1a2233 0%, #2a3550 100%);
-        box-shadow: 0 10px 28px rgba(0,0,0,.25); position: relative;
-        cursor: pointer; outline: none;
-      }}
-      #flash-scope .flip-card-inner {{
-        position: relative; width: 100%; height: 100%;
-        transform-style: preserve-3d;
-        transition: transform .55s cubic-bezier(.2,.7,.2,1);
-      }}
-      #flash-scope .flip-card.flipped .flip-card-inner {{ transform: rotateY(180deg); }}
+      #flash-scope .flip-wrap {{ perspective: 1200px; width: min(720px, 95%); margin: 0 auto 0.75rem auto; }}
+      #flash-scope .flip-card {{ display: block; width: 100%; height: 320px; border-radius: 18px; border: 1px solid {THEME['border']};
+        background: linear-gradient(135deg, #1a2233 0%, #2a3550 100%); box-shadow: 0 10px 28px rgba(0,0,0,.25); position: relative; cursor: pointer; outline: none; }}
+      #flash-scope .flip-card-inner {{ position: relative; width: 100%; height: 100%; transform-style: preserve-3d; transition: transform .55s cubic-bezier(.2,.7,.2,1); }}
+      #flash-scope input[type="checkbox"] {{ display:none; }}
+      #flash-scope input[type="checkbox"]:checked + label .flip-card-inner {{ transform: rotateY(180deg); }}
 
-      #flash-scope .side {{
-        position: absolute; inset: 0; backface-visibility: hidden; border-radius: 18px;
-        display: flex; flex-direction: column; justify-content: center; align-items: center;
-        padding: 1.2rem; color: #f6f7fb;
-      }}
+      #flash-scope .side {{ position: absolute; inset: 0; backface-visibility: hidden; border-radius: 18px; display: flex; flex-direction: column; justify-content: center; align-items: center; padding: 1.2rem; color: #f6f7fb; }}
       #flash-scope .back {{ transform: rotateY(180deg); background: linear-gradient(135deg, #26375b 0%, #1e2a45 100%); }}
       #flash-scope .front .hint, #flash-scope .back .hint {{ position: absolute; bottom: 12px; opacity: .85; font-size: .95rem; }}
       #flash-scope .front .hint::before {{ content: "Tap to reveal"; }}
       #flash-scope .back .hint::before {{ content: "Swipe up for next"; }}
       #flash-scope .front .q, #flash-scope .back .a {{ max-width: 92%; text-align: center; font-size: 1.15rem; line-height: 1.35; white-space: pre-wrap; word-break: break-word; }}
-
-      /* Button row uses a grid so all three align perfectly */
-      #flash-controls {{
-        width: min(720px, 95%);
-        margin: .5rem auto 0 auto;
-        display: grid;
-        grid-template-columns: repeat(3, 1fr);
-        gap: 12px;
-      }}
-      #flash-controls .stButton>button {{
-        height: 56px; display: flex; align-items: center; justify-content: center;
-        border-radius: 12px;
-      }}
+      #flash-scope .controls {{ width:min(720px,95%); margin:.5rem auto 0 auto; display:flex; gap:.5rem; }}
+      #flash-scope .controls .stButton>button {{ border-radius: 12px; }}
     </style>
+    <script>
+      (function(){{
+        // swipe-up to go next
+        let startY = null;
+        const scope = document.getElementById('flash-scope');
+        if(!scope) return;
+        scope.addEventListener('touchstart', function(e) {{
+          if(!e.changedTouches || !e.changedTouches.length) return;
+          startY = e.changedTouches[0].clientY;
+        }}, {{passive:true}});
+        scope.addEventListener('touchend', function(e) {{
+          if(startY === null) return;
+          const endY = e.changedTouches[0].clientY;
+          if(startY - endY > 50) {{
+            const btns = Array.from(document.querySelectorAll('button')).filter(b => b.innerText.trim() === 'Next card');
+            if(btns.length) btns[0].click();
+          }}
+          startY = null;
+        }}, {{passive:true}});
+        scope.addEventListener('keyup', function(e){{
+          if(e.key === ' ' || e.key === 'ArrowUp') {{
+            const btns = Array.from(document.querySelectorAll('button')).filter(b => b.innerText.trim() === 'Next card');
+            if(btns.length) btns[0].click();
+          }}
+        }});
+      }})();
+    </script>
     """, unsafe_allow_html=True)
 
     topic = st.text_input("Flashcards topic (ophthalmology only)", placeholder="e.g., Glaucoma medications")
@@ -987,22 +987,32 @@ def render_flash_ui():
     if idx >= total: idx = total - 1
     st.session_state.flash["idx"] = idx
 
-    # Dashboard
-    render_flash_dashboard(fs)
+    def _dash(fs_):
+        total = len(fs_["cards"])
+        reviewed = sum(1 for c in fs_["cards"] if c.get("mark") is not None)
+        correct = sum(1 for c in fs_["cards"] if c.get("mark") is True)
+        incorrect = sum(1 for c in fs_["cards"] if c.get("mark") is False)
+        remaining = max(0, total - reviewed)
+        c1, c2, c3, c4, c5 = st.columns(5)
+        c1.metric("Total", total)
+        c2.metric("Reviewed", reviewed)
+        c3.metric("Correct", correct)
+        c4.metric("Incorrect", incorrect)
+        c5.metric("Remaining", remaining)
+
+    _dash(fs)
     st.markdown("<br/>", unsafe_allow_html=True)
 
-    # Current card (always start front; flip by toggling class)
     card = fs["cards"][idx]
     front = _escape_html(card["front"])
     back  = _escape_html(card["back"])
-
-    card_id = f"fc_{idx}_{uuid.uuid4().hex[:6]}"
-    next_host_id = f"next_host_{idx}"
+    flip_id = f"flip_{idx}_{uuid.uuid4().hex[:6]}"
 
     st.markdown(f"""
     <div id="flash-scope" tabindex="0">
       <div class="flip-wrap">
-        <div id="{card_id}" class="flip-card" role="button" aria-label="Flashcard (tap to flip)" tabindex="0">
+        <input id="{flip_id}" type="checkbox" />
+        <label class="flip-card" for="{flip_id}" aria-label="Flashcard (tap to flip)">
           <div class="flip-card-inner">
             <div class="side front">
               <div class="q">{front}</div>
@@ -1013,74 +1023,13 @@ def render_flash_ui():
               <div class="hint"></div>
             </div>
           </div>
-        </div>
+        </label>
       </div>
     </div>
-
-    <script>
-    (function(){{
-      const card = document.getElementById("{card_id}");
-      const nextHost = document.getElementById("{next_host_id}");
-      const scope = document.getElementById("flash-scope");
-      if (!card) return;
-
-      // Always start front-side up (twice to avoid race with transitions)
-      card.classList.remove("flipped");
-      requestAnimationFrame(() => card.classList.remove("flipped"));
-
-      const goNext = () => {{
-        const btn = nextHost && nextHost.querySelector("button");
-        if (btn) btn.click();
-      }};
-      const toggleFlip = () => card.classList.toggle("flipped");
-
-      // Click flips
-      card.addEventListener("click", toggleFlip, {{ passive: true }});
-
-      // Keyboard: Space toggles; Enter/ArrowRight go NEXT if back visible; Esc returns to front
-      card.addEventListener("keydown", (e) => {{
-        const k = e.key || e.code;
-        if (k === " " || k === "Space" || k === "Spacebar") {{
-          e.preventDefault();
-          toggleFlip();
-        }} else if ((k === "Enter" || k === "ArrowRight") && card.classList.contains("flipped")) {{
-          e.preventDefault();
-          goNext();
-        }} else if (k === "Escape") {{
-          e.preventDefault();
-          card.classList.remove("flipped");
-        }}
-      }});
-
-      // Swipe up to NEXT (only when flipped, mostly-vertical, quick gesture)
-      let startY = null, startX = null, startT = 0;
-      if (scope) {{
-        scope.addEventListener("touchstart", (e) => {{
-          if (!e.changedTouches || !e.changedTouches.length) return;
-          const t = e.changedTouches[0];
-          startY = t.clientY; startX = t.clientX; startT = Date.now();
-        }}, {{ passive: true }});
-
-        scope.addEventListener("touchend", (e) => {{
-          if (startY === null) return;
-          const t = e.changedTouches[0];
-          const dy = startY - t.clientY;
-          const dx = Math.abs(startX - t.clientX);
-          const dt = Date.now() - startT;
-          if (card.classList.contains("flipped") && dy > 40 && dx < 60 && dt < 800) {{
-            goNext();
-          }}
-          startY = null;
-        }}, {{ passive: true }});
-      }}
-    }})();
-    </script>
+    <script>(function(){{var c=document.getElementById("{flip_id}"); if(c) c.checked=false;}})();</script>
     """, unsafe_allow_html=True)
 
-    # Controls row (aligned grid)
-    st.markdown("<div id='flash-controls'>", unsafe_allow_html=True)
-
-    left, mid, right = st.columns(3)
+    left, mid, right = st.columns([1,1,1])
     with left:
         if st.button("👍 I got it", key=f"fc_right_{idx}", use_container_width=True):
             st.session_state.flash["cards"][idx]["mark"] = True
@@ -1094,19 +1043,14 @@ def render_flash_ui():
                 st.session_state.flash["idx"] = idx + 1
             st.rerun()
     with right:
-        st.markdown(f"<div id='{next_host_id}'>", unsafe_allow_html=True)
         if st.button("Next card", key=f"fc_next_{idx}", use_container_width=True):
             if idx < total - 1:
                 st.session_state.flash["idx"] = idx + 1
             st.rerun()
-        st.markdown("</div>", unsafe_allow_html=True)
-
-    st.markdown("</div>", unsafe_allow_html=True)  # end controls
 
     st.markdown("<br/>", unsafe_allow_html=True)
-    render_flash_dashboard(st.session_state.flash)
+    _dash(st.session_state.flash)
 
-    # Downloads
     rows = []
     for i, c in enumerate(st.session_state.flash["cards"]):
         m = c.get("mark")
@@ -1184,7 +1128,7 @@ st.markdown(f"""
     .case-body {{ opacity:.95; }}
     .case-instr {{ margin:.6em 0 .3em 0; font-weight:600; }}
 
-    /* Align primary buttons next to labeled widgets */
+    /* Robust vertical alignment for buttons next to labeled widgets */
     .row-align .stButton>button {{ margin-top: 2.15rem !important; }}
     @media (max-width: 900px) {{
       .row-align .stButton>button {{ margin-top: .25rem !important; }}
@@ -1196,9 +1140,10 @@ st.markdown(f"""
 
 st.markdown("<div class='topbar-custom'>Ophtha Bot : AI Chatbot for Postgrad Ophthalmology Students</div>", unsafe_allow_html=True)
 
-# --- SIDEBAR (Upload → Modes → Voice Chat → Settings) -----------------------
+# --- SIDEBAR (Custom File → Modes → Voice Chat → Settings) ------------------
 with st.sidebar:
-    st.header("Upload a PDF")
+    # 1) Custom File at the TOP
+    st.header("Custom File")
     uploaded_file = st.file_uploader("Upload a PDF", type="pdf", key="pdf_uploader")
     if uploaded_file and st.button("Process Document", key="process_pdf", use_container_width=True):
         with st.spinner("Processing document..."):
@@ -1225,6 +1170,7 @@ with st.sidebar:
 
     st.divider()
 
+    # 2) Modes
     st.header("Modes")
     allowed_modes = ["Teaching", "Exam", "Case", "Flashcards"]
     enable_modes = st.toggle(
@@ -1246,6 +1192,7 @@ with st.sidebar:
     st.divider()
     st.session_state.teaching_mode = (st.session_state.mode == "Teaching")
 
+    # 3) Voice Chat
     st.header("Voice Chat")
     st.session_state.voice_enabled = st.toggle("Enable Voice Chat", value=st.session_state.voice_enabled, help="Enable voice input and spoken responses.")
     if st.session_state.voice_enabled and (st.session_state.mode in ["Teaching"] or st.session_state.mode is None):
@@ -1266,6 +1213,8 @@ with st.sidebar:
         )]
 
     st.divider()
+
+    # 4) Settings (bottom)
     st.header("Settings")
     is_dark_on = st.session_state.theme == "dark"
     toggled = st.toggle("Dark Mode", value=is_dark_on, key="theme_toggle", help="Switch themes")
