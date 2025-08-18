@@ -62,19 +62,22 @@ GREETING_PATTERNS = [
     r"^\s*(bye|goodbye|see you)\b"
 ]
 def _is_greeting(text: str) -> bool:
-    t = text.lower().strip()
+    t = (text or "").lower().strip()
     return any(re.search(p, t) for p in GREETING_PATTERNS)
+
 def _is_ophthalmology(text: str) -> bool:
+    if not text:
+        return False
     t = text.lower()
     return any(k in t for k in OPHTH_KEYWORDS)
+
 DOMAIN_REFUSAL = (
-    "I'm specialised in ophthalmology (eye care) and basic greetings only. "
-    "Please ask an eye-related question."
+    "This chatbot is ophthalmology-specific. Please ask about eyes, vision, or ophthalmic topics."
 )
 
 # --- Backend Components ---
 embeddings = GoogleGenerativeAIEmbeddings(model="models/embedding-001", google_api_key=GOOGLE_API_KEY)
-llm = ChatGoogleGenerativeAI(model="gemini-1.5-flash-latest", temperature=0.3, google_api_key=GOOGLE_API_KEY)
+llm = ChatGoogleGenerativeAI(model="gemini-1.5-flash-latest", temperature=0.3, google_api_key=google_api_key if (google_api_key:=GOOGLE_API_KEY) else None)
 
 # ---------------- DYNAMIC FOLLOW-UP ----------------------
 def generate_teaching_followup(user_q: str, explanation: str) -> str:
@@ -333,11 +336,15 @@ def create_formatted_pdf(text_content: str, topic: str) -> str:
 
 # --- RAG/Chat Logic ----------------------------------------------------------
 def handle_query_logic(query: str, session_id: str = None):
+    # Greeting path
     if _is_greeting(query):
         return "Hello! I’m your ophthalmology-only assistant. How can I help with eyes/vision today?", None
+
+    # Strict ophthalmology-only gate
     if not _is_ophthalmology(query):
         return DOMAIN_REFUSAL, None
 
+    # Choose vector store (uploaded doc vs. default KB)
     if session_id:
         temp_db_path = os.path.join(TEMP_STORAGE_PATH, session_id)
         if not os.path.exists(temp_db_path):
@@ -347,11 +354,13 @@ def handle_query_logic(query: str, session_id: str = None):
         if not os.path.exists(FAISS_INDEX_PATH):
             return "Error: Default knowledge base not available.", None
         db = FAISS.load_local(FAISS_INDEX_PATH, embeddings, allow_dangerous_deserialization=True)
+
     retriever = db.as_retriever(search_type="similarity", search_kwargs={"k": 5})
 
     def question_answer_func(q: str) -> str:
         chain = RetrievalQA.from_chain_type(llm=llm, chain_type="stuff", retriever=retriever)
         return chain.invoke(q)['result']
+
     def concept_explainer_func(topic: str) -> str:
         context = "\n\n".join([doc.page_content for doc in retriever.get_relevant_documents(topic)])
         prompt_template = PromptTemplate.from_template(
@@ -359,6 +368,7 @@ def handle_query_logic(query: str, session_id: str = None):
         )
         chain = LLMChain(llm=llm, prompt=prompt_template)
         return chain.invoke({"topic": topic, "context": context})["text"]
+
     def cheatsheet_generator_func(topic: str) -> str:
         context = "\n\n".join([doc.page_content for doc in retriever.get_relevant_documents(topic)])
         prompt_template = PromptTemplate.from_template(
@@ -374,6 +384,7 @@ def handle_query_logic(query: str, session_id: str = None):
         StructuredTool.from_function(func=concept_explainer_func, name="ConceptExplainerTool", description="Use for summaries or explanations in the chat."),
         StructuredTool.from_function(func=cheatsheet_generator_func, name="CheatsheetGeneratorTool", description="Use ONLY when explicitly asked for a downloadable PDF or 'cheat sheet'.")
     ]
+
     base_prompt = hub.pull("hwchase17/react-chat")
 
     teaching_mode = st.session_state.get("teaching_mode", False)
@@ -389,13 +400,13 @@ def handle_query_logic(query: str, session_id: str = None):
         )
     else:
         system_instruction = (
-            "You are an expert ophthalmology assistant. Answer questions strictly related to ophthalmology or the provided documents. "
-            "If outside this scope, politely decline and state that you can only answer ophthalmology."
+            "You are an expert ophthalmology assistant. Answer questions strictly related to ophthalmology or the provided documents."
         )
 
     prompt = base_prompt.partial(system_message=system_instruction)
     agent = create_react_agent(llm, tools, prompt)
 
+    # Conversation memory
     memory = ConversationBufferMemory(memory_key="chat_history", return_messages=True)
     for msg in st.session_state.chat_history:
         if "user" in msg:
@@ -404,9 +415,11 @@ def handle_query_logic(query: str, session_id: str = None):
             clean_bot_message = re.sub(r'<.*?>', '', msg["bot"])
             memory.chat_memory.add_ai_message(clean_bot_message)
 
-    agent_executor = AgentExecutor(agent=agent, tools=tools, memory=memory,
-                                   verbose=False, handle_parsing_errors=True,
-                                   return_intermediate_steps=True)
+    agent_executor = AgentExecutor(
+        agent=agent, tools=tools, memory=memory,
+        verbose=False, handle_parsing_errors=True,
+        return_intermediate_steps=True
+    )
 
     response = agent_executor.invoke({"input": query})
     final_answer = response.get('output', "I couldn't find an answer.")
@@ -419,6 +432,7 @@ def handle_query_logic(query: str, session_id: str = None):
                 except IndexError:
                     pass
 
+    # Append a helpful teaching follow-up
     if isinstance(final_answer, str) and final_answer.strip():
         try:
             follow = generate_teaching_followup(query, final_answer)
@@ -570,7 +584,11 @@ def render_exam_ui():
 
     topic = st.text_input("Topic for MCQs (ophthalmology only)", placeholder="e.g., Primary open-angle glaucoma", key="mcq_topic")
 
-    # ---- Controls row (button aligned via CSS helper) ----
+    # Warn immediately if off-topic
+    if (topic or "").strip() and not _is_ophthalmology(topic):
+        st.error("This chatbot is ophthalmology-specific. Enter an ophthalmology topic to proceed.")
+
+    # ---- Controls row ----
     c_num, c_diff, c_btn = st.columns([1, 1, 1], gap="small")
     with c_num:
         num_q = st.number_input("Number of MCQs", min_value=1, max_value=20, value=5, step=1, key="mcq_num")
@@ -585,17 +603,20 @@ def render_exam_ui():
     with c_btn:
         st.markdown("<div class='row-align'>", unsafe_allow_html=True)
         if st.button("Generate MCQs", use_container_width=True, type="primary", key="mcq_generate"):
-            with st.spinner("Generating MCQs…"):
-                mcqs = generate_mcqs(topic or "general ophthalmology", int(num_q), difficulty)
-            st.session_state.exam = {
-                "topic": topic or "general ophthalmology",
-                "generated_at": datetime.utcnow().isoformat() + "Z",
-                "questions": mcqs,
-                "selected": {},   # q_idx -> opt_idx
-                "score": 0,
-                "difficulty": difficulty
-            }
-            st.rerun()
+            if not _is_ophthalmology(topic or ""):
+                st.error("This chatbot is ophthalmology-specific. Please provide an ophthalmology topic.")
+            else:
+                with st.spinner("Generating MCQs…"):
+                    mcqs = generate_mcqs(topic.strip(), int(num_q), difficulty)
+                st.session_state.exam = {
+                    "topic": topic.strip(),
+                    "generated_at": datetime.utcnow().isoformat() + "Z",
+                    "questions": mcqs,
+                    "selected": {},   # q_idx -> opt_idx
+                    "score": 0,
+                    "difficulty": difficulty
+                }
+                st.rerun()
         st.markdown("</div>", unsafe_allow_html=True)
 
     exam_state = st.session_state.get("exam", None)
@@ -742,6 +763,9 @@ def render_case_ui():
 
     topic = st.text_input("Case focus (ophthalmology only)", placeholder="e.g., Painless vision loss · CRAO vs. NAION")
 
+    if (topic or "").strip() and not _is_ophthalmology(topic):
+        st.error("This chatbot is ophthalmology-specific. Enter an ophthalmology topic to proceed.")
+
     c1, c2 = st.columns([1, 1], gap="small")
     with c1:
         difficulty = st.selectbox(
@@ -754,16 +778,19 @@ def render_case_ui():
     with c2:
         st.markdown("<div class='row-align'>", unsafe_allow_html=True)
         if st.button("Generate Case", type="primary", use_container_width=True):
-            with st.spinner("Generating case…"):
-                c = generate_case(topic or "general ophthalmology", difficulty)
-            st.session_state.case = {
-                "topic": topic or "general ophthalmology",
-                "case": c,
-                "response": "",
-                "graded": None,
-                "generated_at": datetime.utcnow().isoformat() + "Z"
-            }
-            st.rerun()
+            if not _is_ophthalmology(topic or ""):
+                st.error("This chatbot is ophthalmology-specific. Please provide an ophthalmology topic.")
+            else:
+                with st.spinner("Generating case…"):
+                    c = generate_case(topic.strip(), difficulty)
+                st.session_state.case = {
+                    "topic": topic.strip(),
+                    "case": c,
+                    "response": "",
+                    "graded": None,
+                    "generated_at": datetime.utcnow().isoformat() + "Z"
+                }
+                st.rerun()
         st.markdown("</div>", unsafe_allow_html=True)
 
     case_state = st.session_state.get("case", None)
@@ -958,21 +985,27 @@ def render_flash_ui():
 
     topic = st.text_input("Flashcards topic (ophthalmology only)", placeholder="e.g., Glaucoma medications")
 
+    if (topic or "").strip() and not _is_ophthalmology(topic):
+        st.error("This chatbot is ophthalmology-specific. Enter an ophthalmology topic to proceed.")
+
     c_num, c_btn = st.columns([1, 1], gap="small")
     with c_num:
         num_cards = st.number_input("Cards", min_value=3, max_value=40, value=10, step=1)
     with c_btn:
         st.markdown("<div class='row-align'>", unsafe_allow_html=True)
         if st.button("Generate Deck", type="primary", use_container_width=True, key="gen_flash"):
-            with st.spinner("Building your deck…"):
-                deck = generate_flashcards(topic or "general ophthalmology", int(num_cards))
-            st.session_state.flash = {
-                "topic": topic or "general ophthalmology",
-                "generated_at": datetime.utcnow().isoformat() + "Z",
-                "cards": deck,
-                "idx": 0
-            }
-            st.rerun()
+            if not _is_ophthalmology(topic or ""):
+                st.error("This chatbot is ophthalmology-specific. Please provide an ophthalmology topic.")
+            else:
+                with st.spinner("Building your deck…"):
+                    deck = generate_flashcards(topic.strip(), int(num_cards))
+                st.session_state.flash = {
+                    "topic": topic.strip(),
+                    "generated_at": datetime.utcnow().isoformat() + "Z",
+                    "cards": deck,
+                    "idx": 0
+                }
+                st.rerun()
         st.markdown("</div>", unsafe_allow_html=True)
 
     fs = st.session_state.get("flash", None)
@@ -1192,8 +1225,9 @@ with st.sidebar:
     st.divider()
     st.session_state.teaching_mode = (st.session_state.mode == "Teaching")
 
-    # 3) Voice Chat
+    # 3) Voice Chat — strictly ophthalmology
     st.header("Voice Chat")
+    st.caption("Off-topic voice input is declined — this chatbot is ophthalmology-specific.")
     st.session_state.voice_enabled = st.toggle("Enable Voice Chat", value=st.session_state.voice_enabled, help="Enable voice input and spoken responses.")
     if st.session_state.voice_enabled and (st.session_state.mode in ["Teaching"] or st.session_state.mode is None):
         input_accent_options = {
@@ -1245,6 +1279,7 @@ elif st.session_state.mode == "Case":
 elif st.session_state.mode == "Flashcards":
     render_flash_ui()
 else:
+    # Baseline Chat/Teaching (also used with voice)
     user_prompt = None
     if st.session_state.voice_enabled and (st.session_state.mode in ["Teaching"] or st.session_state.mode is None):
         user_prompt = speech_to_text(language=st.session_state.input_accent, use_container_width=True, just_once=True, key='STT')
@@ -1252,20 +1287,36 @@ else:
         user_prompt = st.chat_input("Type your question here...")
 
     if user_prompt:
+        # Show user's original message
         st.markdown(f"<div class='msg-user'>{user_prompt}</div>", unsafe_allow_html=True)
         st.session_state.chat_history.append({"user": user_prompt})
+
+        # Strict ophthalmology-only handling
         with st.spinner("Thinking..."):
             answer, pdf_filename = handle_query_logic(user_prompt, st.session_state.get("session_id"))
-            clean_text = re.sub(r'<.*?>', '', answer); raw_answer_text = clean_text.replace('`', '').replace('*', '')
+            clean_text = re.sub(r'<.*?>', '', answer)
+            raw_answer_text = clean_text.replace('`', '').replace('*', '')
             full_answer_html = f"{answer}<br><span class='note-text'>{disclaimer_text}</span>"
+
             st.markdown(f"<div class='msg-bot'>{full_answer_html}</div>", unsafe_allow_html=True)
+
+            # Voice reply only if we produced an actual answer (we still TTS the refusal for consistency)
             if st.session_state.voice_enabled and (st.session_state.mode in ["Teaching"] or st.session_state.mode is None):
-                spoken_text = raw_answer_text + " Anything you'd like to explore next?"
+                spoken_text = raw_answer_text
                 audio_b64 = text_to_audio_b64(spoken_text, st.session_state.output_accent)
-                if audio_b64: render_audio_player_b64(audio_b64)
+                if audio_b64:
+                    render_audio_player_b64(audio_b64)
+
             if pdf_filename:
                 pdf_path = os.path.join(CHEATSHEET_PATH, pdf_filename)
                 if os.path.exists(pdf_path):
                     with open(pdf_path, "rb") as pdf_file:
-                        st.download_button("📥 Download Cheatsheet", pdf_file.read(), pdf_filename, "application/pdf", key=f"dl_{pdf_filename}_{uuid.uuid4()}")
+                        st.download_button(
+                            "📥 Download Cheatsheet",
+                            pdf_file.read(),
+                            pdf_filename,
+                            "application/pdf",
+                            key=f"dl_{pdf_filename}_{uuid.uuid4()}"
+                        )
+
             st.session_state.chat_history.append({"bot": full_answer_html, "pdf_filename": pdf_filename})
