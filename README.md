@@ -6,7 +6,7 @@ Live Demo
 
 App link: https://my-chatbot-project-uh7vkxnrnuneiswhm3n8wu.streamlit.app/
 
-Made in UK as part of my MSc Dissertation in Aug 2025
+Made in UK as part of my MSc Data Science Dissertation in Aug 2025 for University of Birmingham.
 
 If trying to run now :
 
