@@ -39,22 +39,3 @@ Python 3.11+ (see version pinning note below)
 A Google API key with access to Gemini and Generative AI Embeddings
 
 
-
-Architecture
-
-User Input (text/voice)
-        │
-        ▼
-   Domain Gate (ophthalmology / greeting check)
-        │
-        ▼
-   FAISS Retriever (top-k=5 similarity search)
-        │
-        ▼
-   ReAct Agent (selects 1 of 3 tools)
-        ├── RetrievalQA        → direct Q&A
-        ├── Concept Explainer  → structured teaching
-        └── Cheat Sheet Gen    → Markdown → PDF
-        │
-        ▼
-   Response (text + optional TTS audio)
